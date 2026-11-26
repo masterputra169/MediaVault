@@ -12,23 +12,12 @@ updates:
           - "*"
 
   - package-ecosystem: "cargo"
-    directory: "/rust-desktop/src-tauri"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-    groups:
-      rust-deps:
-        patterns:
-          - "*"
-
-  - package-ecosystem: "npm"
     directory: "/rust-desktop"
     schedule:
       interval: "weekly"
     cooldown:
       default-days: 7
     groups:
-      desktop-cli:
+      rust-deps:
         patterns:
           - "*"

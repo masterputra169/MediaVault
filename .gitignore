@@ -1,4 +1,4 @@
-# Private local-only web version & internal planning files (excluded from public Desktop repo)
+# Private local-only web version & internal planning files (excluded from public Rust repo)
 /backend/
 /frontend/
 /scripts/
@@ -24,11 +24,9 @@
 *.db.lock
 *.log
 
-# Rust / Tauri Desktop build artifacts & caches
+# Rust Desktop build artifacts & caches
 /.pnpm-store/
-/rust-desktop/node_modules/
-/rust-desktop/src-tauri/target/
-/rust-desktop/src-tauri/gen/schemas/
+/rust-desktop/target/
 /rust-desktop/*.exe
 /rust-desktop/*.msi
 

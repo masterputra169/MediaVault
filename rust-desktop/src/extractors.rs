@@ -17,7 +17,6 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipWriter};
 
 use crate::errors::{classify_extractor_error, AppError};
-use crate::tools::{background_cmd, ToolPaths};
 use crate::url_policy::{
     clean_text, ensure_public_host, validate_image_url, validate_video_cdn_url, SHARED_HTTP,
 };
@@ -99,14 +98,22 @@ pub struct ImageItem {
 pub struct ExtractedPhotoSet {
     pub title: Option<String>,
     pub uploader: Option<String>,
+    #[allow(dead_code)]
     pub media_id: Option<String>,
     pub images: Vec<ImageItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreviewRgba {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
 }
 
 pub struct PreviewCache {
     tokens: Mutex<HashMap<String, (Instant, String)>>,
     by_url: Mutex<HashMap<String, String>>,
-    data_urls: Mutex<HashMap<String, (Instant, String)>>,
+    rgba_cache: Mutex<HashMap<String, (Instant, Arc<PreviewRgba>)>>,
     decode_sem: Arc<Semaphore>,
 }
 
@@ -115,7 +122,7 @@ impl PreviewCache {
         Self {
             tokens: Mutex::new(HashMap::new()),
             by_url: Mutex::new(HashMap::new()),
-            data_urls: Mutex::new(HashMap::new()),
+            rgba_cache: Mutex::new(HashMap::new()),
             decode_sem: Arc::new(Semaphore::new(4)),
         }
     }
@@ -144,13 +151,21 @@ impl PreviewCache {
         Some(token)
     }
 
-    pub async fn fetch_data_url(&self, token: &str) -> Result<String, AppError> {
+    pub fn get_cached_rgba(&self, token: &str) -> Option<Arc<PreviewRgba>> {
         let now = Instant::now();
-        if let Some((exp, cached)) = self.data_urls.lock().unwrap().get(token).cloned() {
-            if exp > now {
-                return Ok(cached);
-            }
+        self.rgba_cache
+            .lock()
+            .unwrap()
+            .get(token)
+            .filter(|(exp, _)| *exp > now)
+            .map(|(_, img)| Arc::clone(img))
+    }
+
+    pub async fn fetch_rgba(&self, token: &str) -> Result<Arc<PreviewRgba>, AppError> {
+        if let Some(hit) = self.get_cached_rgba(token) {
+            return Ok(hit);
         }
+        let now = Instant::now();
         let target_url = {
             let tokens = self.tokens.lock().unwrap();
             match tokens.get(token) {
@@ -165,14 +180,11 @@ impl PreviewCache {
             .await
             .map_err(|_| AppError::new("INTERNAL_ERROR"))?;
         let raw = fetch_bytes(&target_url, &[], 15 * 1024 * 1024, 15).await?;
-        let jpeg = tokio::task::spawn_blocking(move || encode_preview_jpeg(&raw))
+        let decoded = tokio::task::spawn_blocking(move || decode_preview_rgba(&raw, 480))
             .await
             .map_err(|_| AppError::new("INTERNAL_ERROR"))??;
-        let data_url = format!(
-            "data:image/jpeg;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(jpeg)
-        );
-        let mut cache = self.data_urls.lock().unwrap();
+        let arc = Arc::new(decoded);
+        let mut cache = self.rgba_cache.lock().unwrap();
         if cache.len() > 80 {
             cache.retain(|_, (exp, _)| *exp > now);
             if cache.len() > 80 {
@@ -181,10 +193,25 @@ impl PreviewCache {
         }
         cache.insert(
             token.to_string(),
-            (Instant::now() + Duration::from_secs(900), data_url.clone()),
+            (Instant::now() + Duration::from_secs(900), Arc::clone(&arc)),
         );
-        Ok(data_url)
+        Ok(arc)
     }
+}
+
+pub fn decode_preview_rgba(raw: &[u8], max_dim: u32) -> Result<PreviewRgba, AppError> {
+    let img = decode_safe_image(raw)?;
+    let resized = if img.width() > max_dim || img.height() > max_dim {
+        img.thumbnail(max_dim, max_dim)
+    } else {
+        img
+    };
+    let rgba = resized.to_rgba8();
+    Ok(PreviewRgba {
+        width: rgba.width(),
+        height: rgba.height(),
+        pixels: rgba.into_raw(),
+    })
 }
 
 pub fn looks_like_photo_url(url_str: &str, platform: &str) -> bool {
@@ -1807,136 +1834,456 @@ async fn extract_twitter(url_str: &str) -> Option<ExtractedPhotoSet> {
     })
 }
 
-async fn extract_gallery_dl(url_str: &str, tools: &ToolPaths) -> Option<ExtractedPhotoSet> {
-    let bin = tools.gallery_dl.as_ref()?;
-    let path = Url::parse(url_str).ok()?.path().to_lowercase();
-    if !["/p/", "/reel/", "/tv/", "/pin/", "/status/", "/photo/", "/post/"]
-        .iter()
-        .any(|h| path.contains(h))
-    {
-        return None;
+// ============================================================================
+// 100% Pure-Rust YouTube InnerTube Extractor (ANDROID_VR + IOS direct streams)
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct YouTubeMediaResult {
+    pub video_id: String,
+    pub title: Option<String>,
+    pub uploader: Option<String>,
+    pub duration_seconds: Option<f64>,
+    pub thumbnail_url: Option<String>,
+    pub video_variants: Vec<DirectVideoVariant>,
+    pub audio_url: Option<String>,
+    #[allow(dead_code)]
+    pub audio_bitrate: u64,
+    pub client_ua: String,
+    pub has_audio: bool,
+}
+
+static YT_ID_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^[A-Za-z0-9_-]{11}$").unwrap());
+
+pub fn extract_youtube_id(url_str: &str) -> Option<String> {
+    let parsed = Url::parse(url_str).ok()?;
+    let host = parsed.host_str()?.to_lowercase();
+    if host == "youtu.be" {
+        let seg = parsed.path().trim_matches('/').split('/').next()?;
+        return YT_ID_RE.is_match(seg).then(|| seg.to_string());
     }
-    let out = tokio::time::timeout(
-        Duration::from_secs(20),
-        background_cmd(bin)
-            .args(["--ignore-config", "--no-part", "--dump-json", "--", url_str])
-            .output(),
+    let path = parsed.path();
+    if path == "/watch" {
+        for (k, v) in parsed.query_pairs() {
+            if k == "v" && YT_ID_RE.is_match(&v) {
+                return Some(v.into_owned());
+            }
+        }
+    }
+    for prefix in ["/shorts/", "/embed/", "/live/"] {
+        if let Some(rest) = path.strip_prefix(prefix) {
+            let seg = rest.split('/').next().unwrap_or("");
+            if YT_ID_RE.is_match(seg) {
+                return Some(seg.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub fn parse_youtube_innertube_response(
+    data: &Value,
+    video_id: &str,
+    client_ua: &str,
+) -> Result<YouTubeMediaResult, AppError> {
+    let status = data
+        .pointer("/playabilityStatus/status")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let reason = data
+        .pointer("/playabilityStatus/reason")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if status != "OK" {
+        if status == "LOGIN_REQUIRED" {
+            return Err(AppError::new("LOGIN_REQUIRED"));
+        }
+        if !reason.is_empty() {
+            return Err(classify_extractor_error(reason));
+        }
+        return Err(AppError::new("UNAVAILABLE_MEDIA"));
+    }
+
+    let vd = data.get("videoDetails");
+    let title = clean_text(
+        vd.and_then(|v| v.get("title")).and_then(Value::as_str),
+        240,
+    );
+    let uploader = clean_text(
+        vd.and_then(|v| v.get("author")).and_then(Value::as_str),
+        120,
+    );
+    let duration_seconds = vd
+        .and_then(|v| v.get("lengthSeconds"))
+        .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| v.as_f64()))
+        .filter(|d| d.is_finite() && *d >= 0.0);
+    let thumbnail_url = validate_image_url(
+        vd.and_then(|v| v.pointer("/thumbnail/thumbnails"))
+            .and_then(Value::as_array)
+            .and_then(|a| a.last())
+            .and_then(|t| t.get("url"))
+            .and_then(Value::as_str),
     )
-    .await
-    .ok()?
-    .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let json: Value = serde_json::from_slice(&out.stdout).ok()?;
-    let entries = json.as_array()?;
-    let mut raw = Vec::new();
-    let mut title = None;
-    let mut uploader = None;
-    let mut media_id = None;
-    for entry in entries {
-        let Some(arr) = entry.as_array() else {
+    .or_else(|| validate_image_url(Some(&format!("https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"))));
+
+    let mut adaptive_avc: Vec<DirectVideoVariant> = Vec::new();
+    let mut progressive_mp4: Vec<DirectVideoVariant> = Vec::new();
+    let mut best_audio: Option<(u64, String)> = None;
+
+    let collect_arr = |ptr: &str| -> Vec<&Value> {
+        data.pointer(ptr)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().collect())
+            .unwrap_or_default()
+    };
+
+    for fmt in collect_arr("/streamingData/formats") {
+        let Some(u) = fmt.get("url").and_then(Value::as_str) else {
             continue;
         };
-        let msg_type = arr.first().and_then(Value::as_i64).unwrap_or(0);
-        let meta = if msg_type == 2 {
-            arr.get(1).filter(|v| v.is_object()).or_else(|| arr.get(2).filter(|v| v.is_object()))
-        } else {
-            arr.get(2).filter(|v| v.is_object())
+        let Some(safe_u) = validate_video_cdn_url(u, "youtube") else {
+            continue;
         };
-        if let Some(m) = meta {
-            if title.is_none() {
-                title = clean_text(
-                    m.get("desc")
-                        .or_else(|| m.get("title"))
-                        .or_else(|| m.get("description"))
-                        .or_else(|| m.get("content"))
-                        .and_then(Value::as_str),
-                    240,
-                );
-            }
-            if uploader.is_none() {
-                uploader = clean_text(
-                    m.pointer("/author/nickname")
-                        .or_else(|| m.pointer("/author/name"))
-                        .or_else(|| m.pointer("/author/uniqueId"))
-                        .or_else(|| m.pointer("/user/nickname"))
-                        .or_else(|| m.pointer("/user/name"))
-                        .or_else(|| m.get("author"))
-                        .or_else(|| m.get("username"))
-                        .and_then(Value::as_str),
-                    120,
-                );
-            }
-            if media_id.is_none() {
-                media_id = m
-                    .get("id")
-                    .or_else(|| m.get("post_id"))
-                    .and_then(|v| v.as_str().map(String::from).or_else(|| v.as_i64().map(|n| n.to_string())));
-            }
+        let mime = fmt.get("mimeType").and_then(Value::as_str).unwrap_or("");
+        if !mime.contains("video/mp4") {
+            continue;
         }
-        if msg_type == 3 {
-            if let Some(u) = arr.get(1).and_then(Value::as_str) {
-                let ext = meta
-                    .and_then(|m| m.get("extension"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .to_lowercase();
-                if matches!(ext.as_str(), "mp4" | "webm" | "mov" | "m4a" | "mp3" | "gifv") {
-                    continue;
-                }
-                let w = meta
-                    .and_then(|m| m.get("width"))
-                    .and_then(Value::as_u64)
-                    .map(|x| x as u32);
-                let h = meta
-                    .and_then(|m| m.get("height"))
-                    .and_then(Value::as_u64)
-                    .map(|x| x as u32);
-                raw.push((u.to_string(), w, h));
+        let h = fmt.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let w = fmt.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+        let dim = if w > 0 && h > 0 { w.min(h) } else { h.max(w) };
+        let br = fmt.get("bitrate").and_then(Value::as_u64).unwrap_or(0);
+        progressive_mp4.push(DirectVideoVariant {
+            url: safe_u,
+            height: dim,
+            bitrate: br,
+        });
+    }
+
+    for fmt in collect_arr("/streamingData/adaptiveFormats") {
+        let Some(u) = fmt.get("url").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(safe_u) = validate_video_cdn_url(u, "youtube") else {
+            continue;
+        };
+        let mime = fmt.get("mimeType").and_then(Value::as_str).unwrap_or("");
+        let br = fmt.get("bitrate").and_then(Value::as_u64).unwrap_or(0);
+        if mime.starts_with("audio/mp4") && mime.contains("mp4a") {
+            if best_audio.as_ref().is_none_or(|(b, _)| br > *b) {
+                best_audio = Some((br, safe_u));
             }
+        } else if mime.starts_with("video/mp4") && mime.contains("avc1") {
+            let h = fmt.get("height").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let w = fmt.get("width").and_then(Value::as_u64).unwrap_or(0) as u32;
+            let dim = if w > 0 && h > 0 { w.min(h) } else { h.max(w) };
+            adaptive_avc.push(DirectVideoVariant {
+                url: safe_u,
+                height: dim,
+                bitrate: br,
+            });
         }
     }
-    let images = normalize_items(raw);
-    if images.is_empty() {
-        return None;
+
+    adaptive_avc.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.bitrate.cmp(&a.bitrate)));
+    progressive_mp4.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.bitrate.cmp(&a.bitrate)));
+
+    let (audio_bitrate, audio_url) = match best_audio {
+        Some((b, u)) => (b, Some(u)),
+        None => (0, None),
+    };
+
+    // Prefer high-res adaptive H.264 (muxed with AAC by our pure-Rust mp4_engine); fall back to progressive MP4.
+    let video_variants = if !adaptive_avc.is_empty() && audio_url.is_some() {
+        adaptive_avc
+    } else if !progressive_mp4.is_empty() {
+        progressive_mp4
+    } else {
+        adaptive_avc
+    };
+
+    if video_variants.is_empty() && audio_url.is_none() {
+        return Err(AppError::new("FORMAT_UNAVAILABLE"));
     }
-    Some(ExtractedPhotoSet {
+
+    Ok(YouTubeMediaResult {
+        video_id: video_id.to_string(),
         title,
         uploader,
-        media_id,
-        images,
+        duration_seconds,
+        thumbnail_url,
+        has_audio: audio_url.is_some() || !video_variants.is_empty(),
+        video_variants,
+        audio_url,
+        audio_bitrate,
+        client_ua: client_ua.to_string(),
     })
 }
 
-pub async fn extract_images(
-    url_str: &str,
-    platform: &str,
-    tools: &ToolPaths,
-) -> Option<ExtractedPhotoSet> {
-    extract_images_with_options(url_str, platform, tools, false).await
-}
+pub async fn fetch_youtube_innertube(url_str: &str) -> Result<YouTubeMediaResult, AppError> {
+    let video_id = extract_youtube_id(url_str).ok_or_else(|| AppError::new("UNAVAILABLE_MEDIA"))?;
+    let endpoint = "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+    ensure_public_host(endpoint).await?;
 
-pub async fn extract_images_with_options(
-    url_str: &str,
-    platform: &str,
-    tools: &ToolPaths,
-    skip_direct: bool,
-) -> Option<ExtractedPhotoSet> {
-    if !skip_direct {
-        let direct = match platform {
-            "instagram" => extract_instagram(url_str).await,
-            "threads" => extract_threads(url_str).await,
-            "facebook" => extract_facebook(url_str).await,
-            "pinterest" => extract_pinterest(url_str).await,
-            "x" => extract_twitter(url_str).await,
-            _ => None,
+    let clients: &[(&str, Value)] = &[
+        (
+            "com.google.android.apps.youtube.vr.oculus/1.60.19 (Linux; U; Android 12L; eureka-user Build/SQ3A.220605.009.A1) gzip",
+            serde_json::json!({
+                "videoId": video_id,
+                "context": {
+                    "client": {
+                        "clientName": "ANDROID_VR",
+                        "clientVersion": "1.60.19",
+                        "androidSdkVersion": 32,
+                        "hl": "en",
+                        "gl": "US"
+                    }
+                }
+            }),
+        ),
+        (
+            "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 18_3_2 like Mac OS X;)",
+            serde_json::json!({
+                "videoId": video_id,
+                "context": {
+                    "client": {
+                        "clientName": "IOS",
+                        "clientVersion": "20.10.4",
+                        "deviceMake": "Apple",
+                        "deviceModel": "iPhone16,2",
+                        "osName": "iPhone",
+                        "osVersion": "18.3.2.22D82",
+                        "hl": "en",
+                        "gl": "US"
+                    }
+                }
+            }),
+        ),
+    ];
+
+    let mut last_err = AppError::new("EXTRACTOR_FAILED");
+    for (ua, body) in clients {
+        let Ok(resp) = SHARED_HTTP
+            .post(endpoint)
+            .header("User-Agent", *ua)
+            .header("Content-Type", "application/json")
+            .json(body)
+            .timeout(Duration::from_secs(12))
+            .send()
+            .await
+        else {
+            last_err = AppError::new("NETWORK_ERROR");
+            continue;
         };
-        if direct.as_ref().is_some_and(|d| !d.images.is_empty()) {
-            return direct;
+        if !resp.status().is_success() {
+            last_err = classify_extractor_error(&format!("HTTP error {}", resp.status().as_u16()));
+            continue;
+        }
+        let Ok(bytes) = resp.bytes().await else {
+            last_err = AppError::new("NETWORK_ERROR");
+            continue;
+        };
+        if bytes.len() > MAX_HTML_BYTES {
+            last_err = AppError::new("FILE_TOO_LARGE");
+            continue;
+        }
+        let Ok(data) = serde_json::from_slice::<Value>(&bytes) else {
+            last_err = AppError::new("EXTRACTOR_FAILED");
+            continue;
+        };
+        match parse_youtube_innertube_response(&data, &video_id, ua) {
+            Ok(res) => return Ok(res),
+            Err(err) => last_err = err,
         }
     }
-    extract_gallery_dl(url_str, tools).await
+    Err(last_err)
+}
+
+// ============================================================================
+// 100% Pure-Rust TikTok Extractor (Rehydration HTML + Official oEmbed)
+// ============================================================================
+
+#[derive(Debug, Clone)]
+pub struct TikTokMediaResult {
+    pub media_id: String,
+    pub title: Option<String>,
+    pub uploader: Option<String>,
+    pub duration_seconds: Option<f64>,
+    pub thumbnail_url: Option<String>,
+    pub video_variants: Vec<DirectVideoVariant>,
+    pub images: Vec<ImageItem>,
+    pub cookies: Option<String>,
+}
+
+static TT_REHYD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?s)<script[^>]+id=["']__UNIVERSAL_DATA_FOR_REHYDRATION__["'][^>]*>(\{.+?\})</script>"#)
+        .unwrap()
+});
+
+pub fn parse_tiktok_rehydration(html: &str, url_str: &str) -> Option<TikTokMediaResult> {
+    let cap = TT_REHYD_RE.captures(html)?;
+    let data: Value = serde_json::from_str(&cap[1]).ok()?;
+    let item = data
+        .pointer("/__DEFAULT_SCOPE__/webapp.video-detail/itemInfo/itemStruct")
+        .or_else(|| data.pointer("/__DEFAULT_SCOPE__/webapp.reflow.video.detail/itemInfo/itemStruct"))?;
+
+    let media_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| url_str.rsplit('/').next().unwrap_or("tiktok").to_string());
+    let title = clean_text(item.get("desc").and_then(Value::as_str), 240);
+    let uploader = clean_text(
+        item.pointer("/author/nickname")
+            .or_else(|| item.pointer("/author/uniqueId"))
+            .and_then(Value::as_str),
+        120,
+    );
+    let duration_seconds = item
+        .pointer("/video/duration")
+        .and_then(Value::as_f64)
+        .filter(|d| d.is_finite() && *d >= 0.0);
+    let thumbnail_url = validate_image_url(
+        item.pointer("/video/cover")
+            .or_else(|| item.pointer("/video/originCover"))
+            .and_then(Value::as_str),
+    );
+
+    let mut video_variants = Vec::new();
+    if let Some(bitrates) = item.pointer("/video/bitrateInfo").and_then(Value::as_array) {
+        for b in bitrates {
+            let br = b.get("Bitrate").and_then(Value::as_u64).unwrap_or(0);
+            let h = b
+                .pointer("/PlayAddr/Height")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let w = b
+                .pointer("/PlayAddr/Width")
+                .and_then(Value::as_u64)
+                .unwrap_or(0) as u32;
+            let dim = if w > 0 && h > 0 { w.min(h) } else { h.max(w) };
+            if let Some(urls) = b.pointer("/PlayAddr/UrlList").and_then(Value::as_array) {
+                for u in urls.iter().filter_map(Value::as_str) {
+                    if let Some(safe) = validate_video_cdn_url(u, "tiktok") {
+                        video_variants.push(DirectVideoVariant {
+                            url: safe,
+                            height: dim,
+                            bitrate: br,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    if video_variants.is_empty() {
+        for ptr in ["/video/playAddr", "/video/downloadAddr"] {
+            if let Some(u) = item.pointer(ptr).and_then(Value::as_str) {
+                if let Some(safe) = validate_video_cdn_url(u, "tiktok") {
+                    let h = item.pointer("/video/height").and_then(Value::as_u64).unwrap_or(720) as u32;
+                    let w = item.pointer("/video/width").and_then(Value::as_u64).unwrap_or(0) as u32;
+                    let dim = if w > 0 && h > 0 { w.min(h) } else { h };
+                    video_variants.push(DirectVideoVariant {
+                        url: safe,
+                        height: dim,
+                        bitrate: 0,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    video_variants.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.bitrate.cmp(&a.bitrate)));
+
+    let mut raw_imgs = Vec::new();
+    if let Some(imgs) = item.pointer("/imagePost/images").and_then(Value::as_array) {
+        for im in imgs {
+            let w = im.get("imageWidth").and_then(Value::as_u64).map(|x| x as u32);
+            let h = im.get("imageHeight").and_then(Value::as_u64).map(|x| x as u32);
+            if let Some(u) = im
+                .pointer("/imageURL/urlList/0")
+                .and_then(Value::as_str)
+            {
+                raw_imgs.push((u.to_string(), w, h));
+            }
+        }
+    }
+    let images = normalize_items(raw_imgs);
+
+    if video_variants.is_empty() && images.is_empty() {
+        return None;
+    }
+
+    Some(TikTokMediaResult {
+        media_id,
+        title,
+        uploader,
+        duration_seconds,
+        thumbnail_url: thumbnail_url.or_else(|| images.first().map(|i| i.url.clone())),
+        video_variants,
+        images,
+        cookies: None,
+    })
+}
+
+pub async fn fetch_tiktok_media(url_str: &str) -> Result<TikTokMediaResult, AppError> {
+    ensure_public_host(url_str).await?;
+    let resp = SHARED_HTTP
+        .get(url_str)
+        .header("User-Agent", GENERIC_UA)
+        .header("Accept", "text/html,application/xhtml+xml")
+        .header("Accept-Language", "en-US,en;q=0.9")
+        .timeout(Duration::from_secs(12))
+        .send()
+        .await
+        .map_err(|_| AppError::new("NETWORK_ERROR"))?;
+
+    let cookies: String = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|s| s.split(';').next())
+        .collect::<Vec<_>>()
+        .join("; ");
+
+    if !resp.status().is_success() {
+        return Err(classify_extractor_error(&format!("HTTP error {}", resp.status().as_u16())));
+    }
+    let bytes = resp.bytes().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
+    let html = String::from_utf8_lossy(&bytes);
+    if let Some(mut res) = parse_tiktok_rehydration(&html, url_str) {
+        if !cookies.is_empty() {
+            res.cookies = Some(cookies);
+        }
+        return Ok(res);
+    }
+    if html.contains("SlardarWAF") || html.contains("verify") || html.contains("captcha") {
+        return Err(AppError::new("LOGIN_REQUIRED"));
+    }
+    Err(AppError::new("UNAVAILABLE_MEDIA"))
+}
+
+// ============================================================================
+// Pure-Rust Image Extractor Entrypoint (ZERO gallery-dl!)
+// ============================================================================
+
+pub async fn extract_images(url_str: &str, platform: &str) -> Option<ExtractedPhotoSet> {
+    match platform {
+        "instagram" => extract_instagram(url_str).await,
+        "threads" => extract_threads(url_str).await,
+        "facebook" => extract_facebook(url_str).await,
+        "pinterest" => extract_pinterest(url_str).await,
+        "x" => extract_twitter(url_str).await,
+        "tiktok" => fetch_tiktok_media(url_str).await.ok().and_then(|t| {
+            (!t.images.is_empty()).then_some(ExtractedPhotoSet {
+                title: t.title,
+                uploader: t.uploader,
+                media_id: Some(t.media_id),
+                images: t.images,
+            })
+        }),
+        _ => None,
+    }
 }
 
 pub fn encode_preview_jpeg(raw: &[u8]) -> Result<Vec<u8>, AppError> {

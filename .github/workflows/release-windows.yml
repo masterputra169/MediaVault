@@ -10,7 +10,7 @@ permissions: {}
 
 jobs:
   build-windows:
-    name: Build Windows Installer & Portable EXE
+    name: Build 100% Pure-Rust Windows Installer & Portable EXE
     runs-on: windows-latest
     permissions:
       contents: read
@@ -19,43 +19,35 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
-        with:
-          version: 10
-
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: "22"
-          cache: "pnpm"
-          cache-dependency-path: rust-desktop/pnpm-lock.yaml
-
       - uses: dtolnay/rust-toolchain@39008827e6b4319a349e9a42dfc90579dd25f1ca # stable
 
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
-          workspaces: rust-desktop/src-tauri
+          workspaces: rust-desktop
 
-      - name: Install pinned Tauri CLI
+      - name: Run Rust unit tests
         working-directory: rust-desktop
-        run: pnpm install --frozen-lockfile
+        run: cargo test --locked
 
-      - name: Verify desktop UI syntax & Rust unit tests
+      - name: Build release binary (100% Pure Rust)
+        working-directory: rust-desktop
+        run: cargo build --release --locked
+
+      - name: Build Windows NSIS Installer
         shell: pwsh
-        run: |
-          node --check rust-desktop/ui/app.js
-          Set-Location rust-desktop/src-tauri
-          cargo test --locked
-
-      - name: Build Tauri v2 NSIS Installer
         working-directory: rust-desktop
-        run: node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked
+        run: |
+          $makensis = (Get-Command makensis -ErrorAction SilentlyContinue)?.Source
+          if (-not $makensis) { $makensis = "C:\Program Files (x86)\NSIS\makensis.exe" }
+          & $makensis installer.nsi
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Prepare release artifacts & SHA256SUMS
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force release-assets | Out-Null
-          Copy-Item "rust-desktop\src-tauri\target\release\mediavault-desktop.exe" "release-assets\MediaVault.exe"
-          Copy-Item "rust-desktop\src-tauri\target\release\bundle\nsis\MediaVault_*_x64-setup.exe" "release-assets\"
+          Copy-Item "rust-desktop\target\release\mediavault.exe" "release-assets\MediaVault.exe"
+          Copy-Item "rust-desktop\target\release\MediaVault_*_x64-setup.exe" "release-assets\"
           $hashes = Get-ChildItem "release-assets\*" -File | ForEach-Object {
             $h = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             "$h  $($_.Name)"

@@ -168,9 +168,14 @@ impl Database {
             .flatten()
             .unwrap_or_else(|| default.to_string())
         };
+        let raw_audio = get("default_audio_format", "m4a");
+        let default_audio_format = match raw_audio.as_str() {
+            "m4a" | "wav" => raw_audio,
+            _ => "m4a".to_string(),
+        };
         Ok(Preferences {
             default_video_quality: get("default_video_quality", "best"),
-            default_audio_format: get("default_audio_format", "mp3"),
+            default_audio_format,
             theme: get("theme", "dark"),
             download_dir: get(
                 "download_dir",
@@ -183,7 +188,7 @@ impl Database {
         if !matches!(
             prefs.default_video_quality.as_str(),
             "best" | "1080" | "720" | "480" | "360"
-        ) || !matches!(prefs.default_audio_format.as_str(), "mp3" | "m4a")
+        ) || !matches!(prefs.default_audio_format.as_str(), "m4a" | "wav")
             || !matches!(prefs.theme.as_str(), "dark" | "light" | "system")
         {
             return Err(AppError::new("INVALID_REQUEST"));

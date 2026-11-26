@@ -1,9 +1,12 @@
-# MediaVault Desktop
+# MediaVault (100% Pure Rust)
 
-**MediaVault Desktop** adalah aplikasi desktop Windows lokal yang cepat, ringan, dan privat untuk mengunduh **video (MP4), audio (MP3/M4A), serta foto & album carousel (JPG/PNG/WebP/ZIP)** dari tautan media publik — **100% berjalan di komputer Anda tanpa server cloud, tanpa akun, dan tanpa telemetri**.
+**MediaVault** adalah aplikasi desktop Windows lokal yang ditulis **100% dalam bahasa Rust** — mulai dari **GUI native (`eframe`/`egui`)**, **ekstraktor 7 platform**, **MP4/fMP4 lossless muxer & probe**, **konverter & pemutar audio (`M4A`/`WAV`)**, hingga **database SQLite**.
+
+**Tanpa `yt-dlp`, tanpa `FFmpeg`, tanpa `ffprobe`, tanpa `gallery-dl`, tanpa `Node.js`, tanpa WebView2/HTML/JS, dan tanpa cloud.** Cukup unduh satu file, jalankan, dan langsung pakai dengan konsumsi RAM sangat rendah (~25–45 MB) serta analisis cepat (~0,4–1,3 detik).
 
 [![Release](https://img.shields.io/github/v/release/masterputra169/MediaVault?style=flat-square&label=Download%20Terbaru)](https://github.com/masterputra169/MediaVault/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/masterputra169/MediaVault/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/masterputra169/MediaVault/actions/workflows/ci.yml)
+[![Language: 100% Rust](https://img.shields.io/badge/Language-100%25%20Rust-orange?style=flat-square)](rust-desktop/Cargo.toml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 
 ---
@@ -12,171 +15,131 @@
 
 Unduh langsung dari halaman [**GitHub Releases Terbaru**](https://github.com/masterputra169/MediaVault/releases/latest):
 
-| Paket | Deskripsi | Tautan Unduh (v0.1.0) |
+| Paket | Deskripsi | Tautan Unduh (v0.2.0) |
 | --- | --- | --- |
-| **Windows Installer (Direkomendasikan)** | Installer NSIS ringan (~4,5 MB), bisa memilih lokasi instalasi, tidak memerlukan hak Administrator, lengkap dengan shortcut Start Menu & Uninstaller. | [**`MediaVault_0.1.0_x64-setup.exe`**](https://github.com/masterputra169/MediaVault/releases/download/v0.1.0/MediaVault_0.1.0_x64-setup.exe) |
-| **Portable EXE** | Langsung dijalankan tanpa instalasi (~17 MB). | [**`MediaVault.exe`**](https://github.com/masterputra169/MediaVault/releases/download/v0.1.0/MediaVault.exe) |
-| **Checksum SHA-256** | Verifikasi integritas file unduhan sebelum dijalankan. | [**`SHA256SUMS.txt`**](https://github.com/masterputra169/MediaVault/releases/download/v0.1.0/SHA256SUMS.txt) |
+| **Windows Installer (Direkomendasikan)** | Installer NSIS ringan, bebas pilih lokasi instalasi, tanpa hak Administrator, lengkap dengan shortcut Start Menu & Uninstaller. | [**`MediaVault_0.2.0_x64-setup.exe`**](https://github.com/masterputra169/MediaVault/releases/download/v0.2.0/MediaVault_0.2.0_x64-setup.exe) |
+| **Portable EXE** | Satu file `.exe` mandiri — langsung klik & jalankan tanpa instalasi dan tanpa memasang komponen tambahan apa pun. | [**`MediaVault.exe`**](https://github.com/masterputra169/MediaVault/releases/download/v0.2.0/MediaVault.exe) |
+| **Checksum SHA-256** | Verifikasi integritas file unduhan sebelum dijalankan. | [**`SHA256SUMS.txt`**](https://github.com/masterputra169/MediaVault/releases/download/v0.2.0/SHA256SUMS.txt) |
 
-> **Verifikasi Checksum (Opsional — PowerShell):**
+> **Verifikasi Checksum (PowerShell):**
 > ```powershell
-> Get-FileHash .\MediaVault_0.1.0_x64-setup.exe -Algorithm SHA256
+> Get-FileHash .\MediaVault_0.2.0_x64-setup.exe -Algorithm SHA256
 > ```
-> Cocokkan hasil hash dengan isi [`SHA256SUMS.txt`](https://github.com/masterputra169/MediaVault/releases/download/v0.1.0/SHA256SUMS.txt).
+> Cocokkan hasil hash dengan [`SHA256SUMS.txt`](https://github.com/masterputra169/MediaVault/releases/download/v0.2.0/SHA256SUMS.txt).
 
-> **Catatan Windows SmartScreen:** Karena installer open-source ini belum memakai sertifikat Code Signing berbayar, Windows SmartScreen mungkin menampilkan peringatan *"Windows protected your PC"* pada pemakaian pertama. Klik **More info → Run anyway** setelah memverifikasi checksum dari rilis resmi di repositori ini.
+> **Catatan Windows SmartScreen:** Karena installer open-source ini belum memakai sertifikat Code Signing berbayar, Windows SmartScreen mungkin menampilkan peringatan pada pemakaian pertama. Klik **More info → Run anyway** setelah memverifikasi checksum dari rilis resmi di repositori ini.
+
+---
+
+## Mengapa 100% Pure Rust (Zero External Dependencies)?
+
+| Aspek | Versi Lama (v0.1.0 — Tauri + WebView2 + yt-dlp + FFmpeg) | **MediaVault v0.2.0 (100% Pure Rust)** |
+| --- | --- | --- |
+| **Konsumsi RAM Idle** | ~130–250 MB (proses Edge WebView2) | **~25–45 MB** (native `eframe`/`egui`) |
+| **Dependensi Eksternal** | Wajib pasang `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js` (~150+ MB) | **0 dependensi** — semua sudah tertanam di dalam 1 file `.exe` |
+| **Penggabungan Video + Audio** | Spawn subprocess `ffmpeg.exe` | **Pure-Rust ISO-BMFF Muxer (`mp4_engine.rs`)** — lossless, streaming, <0,3 detik |
+| **Ekstraksi Metadata & URL** | Fallback spawn Python `yt-dlp` / `gallery-dl` (3–15 detik) | **100% Pure-Rust async HTTP** (~0,4–1,3 detik) |
+| **Bahasa Kode Sumber** | Rust + HTML + CSS + JavaScript + Node/pnpm | **100% Rust** (`cargo build --release`) |
 
 ---
 
 ## Platform yang Didukung
 
-Semua platform berikut mendukung **ekstraktor cepat pure-Rust** dan telah diuji secara langsung untuk konten publik:
-
-| Platform | Jenis Tautan yang Didukung | Video & Audio (`MP4` / `MP3` / `M4A`) | Foto & Album (`JPG` / `PNG` / `WebP` / `ZIP`) |
+| Platform | Jenis Tautan Publik | Video & Audio (`MP4` / `M4A` / `WAV`) | Foto & Album (`JPG` / `PNG` / `WebP` / `ZIP`) |
 | --- | --- | :---: | :---: |
-| **YouTube** | `youtube.com/watch`, `youtu.be`, Shorts | Ya | — |
+| **YouTube** | `youtube.com/watch`, `youtu.be`, Shorts, Live VOD | Ya (InnerTube `ANDROID_VR`/`IOS` + Pure-Rust MP4 Muxer) | — |
 | **Instagram** | `/p/`, `/reel/`, `/tv/`, `/share/` | Ya | Ya (tunggal & carousel ZIP) |
-| **TikTok** | `tiktok.com`, `vt`/`vm`, `/photo/` | Ya | Ya (slideshow ZIP via `gallery-dl`) |
 | **X / Twitter** | `x.com`, `twitter.com`, `t.co`, quote-tweet | Ya | Ya (tunggal & multi-foto ZIP) |
 | **Threads** | `threads.com`, `threads.net`, `/share/`, `/t/` | Ya | Ya (tunggal, carousel ZIP, quote-post) |
 | **Facebook** | `watch`, `/videos/`, `/reel/`, `/photo/`, `/posts/`, `/share/`, `fb.watch` | Ya | Ya (foto tunggal & album ZIP) |
 | **Pinterest** | `/pin/`, `pin.it` | Ya | Ya |
+| **TikTok** | `tiktok.com`, `vt`/`vm`, `/video/`, `/photo/` | Ya *(bila tidak dibatasi WAF)* | Ya *(bila tidak dibatasi WAF)* |
 
-> **Disclaimer:** Gunakan MediaVault hanya untuk konten publik yang berhak Anda unduh dan patuhi ketentuan hak cipta masing-masing platform. MediaVault **tidak** mendukung bypass DRM, paywall, konten privat/wajib login, bypass anti-bot, atau impor cookie browser.
+> **Disclaimer:** Gunakan MediaVault hanya untuk konten publik yang berhak Anda unduh dan patuhi ketentuan masing-masing platform. MediaVault **tidak** mendukung bypass DRM, paywall, konten privat/wajib login, bypass anti-bot/WAF, atau impor cookie browser.
 
 ---
 
 ## Fitur Utama
 
-- **Analisis Super Cepat (Pure-Rust Fast Path):** Analisis tautan YouTube, X, Instagram, Threads, Facebook, Pinterest, dan TikTok dilakukan langsung oleh parser Rust berkecepatan tinggi (~0,4–1,5 detik) sebelum fallback ke `yt-dlp`.
-- **Kompatibilitas Video Universal (H.264 + AAC):** Mode kualitas **Terbaik** otomatis memprioritaskan resolusi & bitrate tertinggi dalam codec `avc1` (H.264) + `mp4a` (AAC) kontainer `.mp4` agar langsung bisa diputar di Windows Media Player, HP, WhatsApp, dan editor video tanpa perlu ekstensi codec AV1.
-- **Pratinjau Media Terunduh Langsung di Aplikasi:** Klik tombol **Pratinjau** (atau klik thumbnail item yang selesai) di daftar unduhan untuk langsung memutar video MP4 (mendukung seeking/HTTP Range), melihat foto, menelusuri slide album `.zip` dengan tombol panah `←`/`→`, atau memutar audio MP3/M4A tanpa keluar aplikasi.
-- **Installer Komponen 1-Klik + Verifikasi SHA-256:** Di menu **Pengaturan → Dependency & Penyimpanan**, pasang atau perbarui `yt-dlp`, `FFmpeg + ffprobe`, dan `gallery-dl` langsung dari rilis resmi GitHub tanpa terminal. Aplikasi mengecek versi terlebih dahulu agar tidak mengunduh ulang bila sudah terbaru, lalu memverifikasi digest **SHA-256** sebelum memasang.
-- **Kontrol Folder Simpan Fleksibel:**
-  - Atur folder default di **Pengaturan** (**Pilih…** dengan dialog folder native Windows).
-  - Pilih folder tujuan khusus **per unduhan** sebelum menekan *Unduh sekarang* (**Ubah…**).
-  - Pindahkan file yang sudah selesai ke folder lain langsung dari daftar riwayat (**Pindahkan**).
-  - Tombol **Buka folder** membuka Windows Explorer dan menyorot langsung file hasil unduhan.
-- **Progres Real-Time & Antrean Aman:** Menampilkan persentase, ukuran unduhan, kecepatan (`MB/s`), estimasi waktu (ETA), pembatalan instan (*Batalkan*), dan *Ulangi* untuk unduhan yang gagal/terhenti.
-- **UI Modern & Aksesibel:** Tampilan 1 halaman rapi tanpa scroll berlebih dengan tema **Gelap / Terang / Sistem** (`light-dark()` + `oklch()`), native `<dialog>`, top-layer toast Popover, serta filter tab (`Semua`, `Aktif`, `Video`, `Audio`, `Foto`), pencarian judul, dan filter platform.
+- **100% Mandiri Tanpa Instalasi Tambahan:** Begitu MediaVault dibuka, langsung berstatus **✓ Siap · Zero External Deps** — tidak perlu repot mengunduh `yt-dlp`, `FFmpeg`, `gallery-dl`, maupun `Node.js`.
+- **Pure-Rust MP4/fMP4 Muxer & Probe (`mp4_engine.rs`):**
+  - Menggabungkan aliran video adaptif YouTube H.264 (`avc1`) + audio AAC (`mp4a`) menjadi file `.mp4` *fast-start* standar yang langsung kompatibel dengan Windows Media Player, HP, WhatsApp, dan editor video — tanpa re-encoding dan tanpa FFmpeg.
+  - Mengekstrak audio lossless **`.m4a` (AAC)** dan **`.wav` (PCM 16-bit via Symphonia + Hound)** sepenuhnya di Rust.
+- **Pratinjau Media Terunduh Langsung di Aplikasi:**
+  - **Foto & Album ZIP:** Viewer gambar native GPU-accelerated langsung di dalam aplikasi (mendukung tombol panah `←`/`→` untuk menelusuri slide album `.zip`).
+  - **Audio (`M4A` / `WAV`):** Pemutar audio bawaan pure-Rust (`Rodio` + `Symphonia`) dengan tombol *Putar / Jeda / Berhenti*.
+  - **Video (`MP4`):** Inspeksi detail teknis instan `<1 ms` (resolusi, durasi, codec `avc1`/`mp4a`, ukuran file) + thumbnail + tombol **Putar di Pemutar Video**.
+- **Kontrol Folder Simpan Fleksibel:** Ubah folder default di **Pengaturan**, pilih folder khusus per unduhan (**Ubah…**), pindahkan file selesai (**Pindahkan**), dan buka langsung lokasi file di Windows Explorer (**Buka folder**).
+- **UI Native Ringan (`eframe`/`egui`):** Tema **Gelap / Terang**, tab filter (`Semua`, `Aktif`, `Video`, `Audio`, `Foto`), pencarian judul, filter platform, paginasi, progres real-time (`MB/s` + ETA), pembatalan instan, dan hapus riwayat/file aman.
 
 ---
 
-## Cara Pakai Cepat
+## Lokasi Penyimpanan Data Lokal (Windows)
 
-1. **Pasang atau Jalankan MediaVault:** Jalankan `MediaVault_0.1.0_x64-setup.exe` (atau buka langsung `MediaVault.exe`).
-2. **Pasang Komponen (Sekali di Awal):** Klik **Pengaturan** → pada panel **Dependency & Penyimpanan**, klik **Pasang yang belum ada**. Tunggu hingga `yt-dlp`, `FFmpeg`, `ffprobe`, dan `gallery-dl` berstatus `✓`.
-3. **Unduh Media:**
-   - Tempel tautan publik di kotak URL (atau klik **Tempel**) lalu klik **Analisis URL**.
-   - Pilih mode **Video**, **Audio**, atau **Foto**, atur kualitas/format/slide dan folder tujuan bila perlu, lalu klik **Unduh sekarang**.
-4. **Pratinjau & Kelola File:** Setelah status `✓ Selesai`, klik **Pratinjau** untuk melihat video/foto langsung, **Buka folder** untuk membuka di Explorer, atau **Pindahkan** untuk memindahkan file ke folder lain.
-
----
-
-## Arsitektur & Tech Stack
-
-Aplikasi Desktop ini dibangun dengan core **100% Rust (Tauri v2)** tanpa runtime Python maupun Node.js saat dijalankan oleh pengguna:
-
-| Lapisan | Teknologi | Peran |
-| --- | --- | --- |
-| **Core Backend & Engine** | **Rust** + **Tauri v2** + **Tokio** | Validasi URL/SSRF, ekstraktor cepat 7 platform, antrean unduhan, pembatalan proses, streaming `mvmedia`, dan installer SHA-256. |
-| **Database Lokal** | **SQLite** (`rusqlite` bundled) | Menyimpan riwayat unduhan dan preferensi secara persisten di mesin lokal. |
-| **Antarmuka (UI)** | **HTML5 + CSS3 + Vanilla JS** di **Windows WebView2** | Tampilan native ringan tanpa bundler framework berat; seluruh data diambil dari command Rust via IPC Tauri. |
-| **Tool Media Eksternal (Lokal)** | `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl` | Dijalankan secara terisolasi (argument array, tanpa shell) untuk ekstraksi situs kompleks, penggabungan video/audio, dan konversi MP3/M4A. |
-
-### Lokasi Penyimpanan Data Lokal (Windows)
 - **Database SQLite & preferensi:** `%LOCALAPPDATA%\MediaVault\app.db`
-- **Komponen terpasang (`yt-dlp`, `ffmpeg`, `ffprobe`, `gallery-dl`):** `%LOCALAPPDATA%\MediaVault\bin\`
 - **Folder unduhan default:** `C:\Users\<Username>\Downloads\MediaVault` *(dapat diubah kapan saja di Pengaturan)*
-
----
-
-## Keamanan & Privasi
-
-Kode sumber telah diaudit menyeluruh sebelum publikasi (detail lengkap di [SECURITY.md](SECURITY.md)):
-- **Zero Telemetry & Zero Cloud:** Tidak ada pelacakan, analitik, atau pengiriman URL ke server pihak ketiga.
-- **Anti-SSRF & DNS Rebinding:** Custom `PublicOnlyResolver` pada `reqwest`, pemblokiran seluruh IP non-publik IPv4/IPv6, serta allowlist domain platform & CDN resmi.
-- **Anti-Command Injection & Binary Hijacking:** Eksekusi subprocess murni lewat argument array dengan `--ignore-config`, `YTDLP_NO_PLUGINS=1`, timeout global, batas ukuran file (2 GiB), dan pencarian biner hanya dari jalur tepercaya.
-- **Verifikasi Kriptografis Installer:** Setiap unduhan `yt-dlp`, `FFmpeg`, dan `gallery-dl` diverifikasi hash **SHA-256** + `Content-Length`, dilindungi dari Zip Bomb & Zip-Slip, serta diganti secara atomik.
-- **WebView2 & Path Hardening:** CSP ketat tanpa `unsafe-inline` / remote `https:` fallback, nol sink `innerHTML`/`eval`, pratinjau lokal terisolasi lewat protokol `mvmedia` berbasis UUID, serta pemblokiran path UNC (`\\server\share`) untuk mencegah kebocoran hash Net-NTLMv2.
 
 ---
 
 ## Build dari Source (Developer — Windows)
 
-### Prasyarat
-- **Windows 10 / 11 (x64)** dengan Microsoft Edge WebView2 (sudah bawaan di Windows 10/11)
-- **Rust (stable)** — https://rustup.rs
-- **Node.js 22+** & **pnpm 10+** (hanya diperlukan saat build CLI Tauri, tidak dipakai saat aplikasi dijalankan)
-
-### Menjalankan Pengujian & Build
+Prasyarat: **Rust (stable)** saja (https://rustup.rs). Untuk membangun installer `.exe`, tambahkan **NSIS (`makensis`)**.
 
 ```powershell
 # 1. Clone repositori
 git clone https://github.com/masterputra169/MediaVault.git
-cd MediaVault
+cd MediaVault\rust-desktop
 
-# 2. Verifikasi sintaks UI & jalankan seluruh unit test Rust (offline)
-node --check rust-desktop/ui/app.js
-cd rust-desktop/src-tauri
+# 2. Jalankan seluruh unit test offline (100% pure Rust)
 cargo test --locked
 
-# 3. Pasang Tauri CLI versi ter-pin & build installer NSIS + portable EXE
-cd ..
-pnpm install --frozen-lockfile
-node node_modules/@tauri-apps/cli/tauri.js build --bundles nsis -- --locked
+# 3. Build binary release native (~10 MB, 0 dependensi eksternal)
+cargo build --release --locked
+
+# 4. (Opsional) Bangun Windows Installer NSIS
+makensis installer.nsi
 ```
 
-Hasil kompilasi tersedia di:
-- `rust-desktop/src-tauri/target/release/mediavault-desktop.exe`
-- `rust-desktop/src-tauri/target/release/bundle/nsis/MediaVault_0.1.0_x64-setup.exe`
+Hasil build tersedia di:
+- `rust-desktop/target/release/mediavault.exe`
+- `rust-desktop/target/release/MediaVault_0.2.0_x64-setup.exe`
 
 ---
 
-## Rilis Otomatis (GitHub Actions)
-
-Menandai tag semver baru otomatis menjalankan seluruh tes, membangun installer NSIS + `MediaVault.exe` + `SHA256SUMS.txt` di runner Windows terisolasi (`contents: read`), lalu mempublikasikan rilis melalui job terpisah (`contents: write`):
-
-```bash
-git tag -a v0.1.1 -m "MediaVault v0.1.1"
-git push origin v0.1.1
-```
-
-## Struktur Repositori
+## Struktur Repositori (100% Rust)
 
 ```text
 MediaVault/
 ├── .github/
-│   ├── dependabot.yml                  # Pembaruan dependensi mingguan (Cargo, npm CLI, Actions)
+│   ├── dependabot.yml             # Pembaruan Cargo & GitHub Actions mingguan
 │   └── workflows/
-│       ├── ci.yml                      # CI otomatis: cek sintaks UI & cargo test --locked
-│       └── release-windows.yml         # Build NSIS + portable EXE + SHA256SUMS & GitHub Release
+│       ├── ci.yml                 # CI murni Rust: cargo test --locked
+│       └── release-windows.yml    # Build release EXE + NSIS installer + SHA256SUMS
 ├── rust-desktop/
-│   ├── package.json & pnpm-lock.yaml   # Versi ter-pin @tauri-apps/cli
-│   ├── src-tauri/
-│   │   ├── Cargo.toml & Cargo.lock
-│   │   ├── tauri.conf.json             # Konfigurasi Tauri v2, CSP ketat, & bundler NSIS
-│   │   └── src/
-│   │       ├── lib.rs                  # Tauri IPC commands & custom protocol mvmedia
-│   │       ├── engine.rs               # Analisis cepat, antrean unduhan, yt-dlp & FFmpeg
-│   │       ├── images.rs               # Ekstraktor foto/video pure-Rust & PreviewCache
-│   │       ├── installer.rs            # Installer 1-klik yt-dlp/FFmpeg/gallery-dl + SHA-256
-│   │       ├── url_policy.rs           # Allowlist URL/CDN & PublicOnlyResolver (anti-SSRF)
-│   │       ├── tools.rs                # Deteksi tool aman & isolasi environment subprocess
-│   │       ├── db.rs                   # SQLite persistence & validasi folder anti-UNC
-│   │       └── errors.rs               # Pemetaan kode error terstruktur
-│   └── ui/
-│       ├── index.html                  # Markup semantik & native <dialog> / Popover API
-│       ├── styles.css                  # Design system oklch() + light-dark()
-│       └── app.js                      # Logika UI WebView2 & pemutar pratinjau media
+│   ├── Cargo.toml & Cargo.lock    # 100% Rust crate (eframe/egui, reqwest, rusqlite, symphonia, rodio)
+│   ├── build.rs                   # Embed ikon Windows ke binary
+│   ├── installer.nsi              # Script installer NSIS native (tanpa Node/Tauri)
+│   ├── assets/
+│   │   ├── icon.ico
+│   │   └── icon-128.png
+│   └── src/
+│       ├── main.rs                # Entrypoint aplikasi native Windows + Tokio runtime
+│       ├── ui.rs                  # GUI native 100% Rust (eframe/egui) + modal pratinjau
+│       ├── engine.rs              # Mesin analisis, antrean unduhan, & ranged YouTube streamer
+│       ├── extractors.rs          # Ekstraktor pure-Rust 7 platform + image/ZIP engine
+│       ├── mp4_engine.rs          # Pure-Rust MP4/fMP4 probe, demuxer, fast-start muxer & M4A/WAV
+│       ├── audio_player.rs        # Pemutar audio in-app pure-Rust (Rodio + Symphonia)
+│       ├── url_policy.rs          # Allowlist URL/CDN & PublicOnlyResolver (anti-SSRF/DNS rebinding)
+│       ├── db.rs                  # SQLite persistence & validasi folder anti-UNC
+│       └── errors.rs              # Pemetaan error terstruktur
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── README.md
 └── SECURITY.md
 ```
 
-## Kontribusi, Keamanan, & Lisensi
+## Keamanan, Kontribusi, & Lisensi
 
-- Laporkan celah keamanan secara privat mengikuti panduan di [SECURITY.md](SECURITY.md).
-- Panduan kontribusi tersedia di [CONTRIBUTING.md](CONTRIBUTING.md).
-- Dirilis di bawah lisensi [MIT](LICENSE).
+- Detail arsitektur keamanan & pelaporan kerentanan: [SECURITY.md](SECURITY.md)
+- Panduan kontribusi: [CONTRIBUTING.md](CONTRIBUTING.md)
+- Lisensi: [MIT](LICENSE)
