@@ -324,7 +324,7 @@ impl AppEngine {
                     has_audio: has_video,
                     supports_mp4: has_video,
                     warnings: if !has_video && !has_images {
-                        vec!["Media tidak ditemukan.".into()]
+                        vec!["No downloadable media found.".into()]
                     } else {
                         Vec::new()
                     },
@@ -713,32 +713,71 @@ impl AppEngine {
         progress_range: (f64, f64),
         cancel_rx: &mut watch::Receiver<bool>,
     ) -> Result<i64, AppError> {
-        let safe_url =
+        let mut current_url =
             validate_video_cdn_url(url_str, platform).ok_or_else(|| AppError::new("FORBIDDEN"))?;
-        ensure_public_host(&safe_url).await?;
+        ensure_public_host(&current_url).await?;
 
         // YouTube googlevideo.com throttles single un-ranged GETs to ~1x playback speed;
         // requesting 4 MiB HTTP byte ranges unlocks full line speed without any external tool.
         if platform == "youtube" {
             return self
-                .stream_youtube_ranged(job_id, &safe_url, dest, ua, progress_range, cancel_rx)
+                .stream_youtube_ranged(job_id, &current_url, dest, ua, progress_range, cancel_rx)
                 .await;
         }
 
-        let mut req = SHARED_HTTP.get(&safe_url).timeout(Duration::from_secs(600));
-        if let Some(u) = ua {
-            req = req.header("User-Agent", u);
+        let referer = match platform {
+            "facebook" => Some("https://www.facebook.com/"),
+            "instagram" => Some("https://www.instagram.com/"),
+            "threads" => Some("https://www.threads.com/"),
+            "tiktok" => Some("https://www.tiktok.com/"),
+            "x" => Some("https://x.com/"),
+            "pinterest" => Some("https://www.pinterest.com/"),
+            _ => None,
+        };
+
+        // Follow up to 5 validated same-platform CDN redirects (e.g. Facebook video.*.fna.fbcdn.net -> video.xx.fbcdn.net)
+        let mut active_cookie = cookie;
+        let mut resp = None;
+        for _hop in 0..=5 {
+            let mut req = SHARED_HTTP
+                .get(&current_url)
+                .header("Accept", "*/*")
+                .timeout(Duration::from_secs(600));
+            if let Some(r) = referer {
+                req = req.header("Referer", r);
+            }
+            if let Some(u) = ua {
+                req = req.header("User-Agent", u);
+            }
+            if let Some(c) = active_cookie {
+                req = req.header("Cookie", c);
+            }
+            let r = req.send().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
+            let status = r.status().as_u16();
+            if matches!(status, 301 | 302 | 303 | 307 | 308) {
+                let loc = r
+                    .headers()
+                    .get("location")
+                    .and_then(|v| v.to_str().ok())
+                    .ok_or_else(|| AppError::new("NETWORK_ERROR"))?;
+                let base = url::Url::parse(&current_url).map_err(|_| AppError::new("INVALID_URL"))?;
+                let joined = base.join(loc).map_err(|_| AppError::new("INVALID_URL"))?;
+                let next_safe = validate_video_cdn_url(joined.as_str(), platform)
+                    .ok_or_else(|| AppError::new("FORBIDDEN"))?;
+                ensure_public_host(&next_safe).await?;
+                if joined.host_str() != base.host_str() {
+                    active_cookie = None;
+                }
+                current_url = next_safe;
+                continue;
+            }
+            if !r.status().is_success() {
+                return Err(classify_extractor_error(&format!("HTTP error {status}")));
+            }
+            resp = Some(r);
+            break;
         }
-        if let Some(c) = cookie {
-            req = req.header("Cookie", c);
-        }
-        let mut resp = req.send().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
-        if !resp.status().is_success() {
-            return Err(classify_extractor_error(&format!(
-                "HTTP error {}",
-                resp.status().as_u16()
-            )));
-        }
+        let mut resp = resp.ok_or_else(|| AppError::new("NETWORK_ERROR"))?;
         let total = resp.content_length().map(|n| n as i64);
         if let Some(t) = total {
             if t > MAX_DIRECT_VIDEO_BYTES {
@@ -813,6 +852,7 @@ impl AppEngine {
         let mut last_emit = Instant::now();
         let (p_start, p_end) = progress_range;
 
+        let mut active_url = safe_url.to_string();
         loop {
             if *cancel_rx.borrow() {
                 drop(file);
@@ -824,17 +864,45 @@ impl AppEngine {
                 None => offset + CHUNK_SIZE - 1,
             };
             let range_hdr = format!("bytes={offset}-{end}");
-            let mut req = SHARED_HTTP
-                .get(safe_url)
-                .header("Range", range_hdr)
-                .timeout(Duration::from_secs(120));
-            if let Some(u) = ua {
-                req = req.header("User-Agent", u);
+            let mut resp = None;
+            for _hop in 0..=4 {
+                let mut req = SHARED_HTTP
+                    .get(&active_url)
+                    .header("Range", &range_hdr)
+                    .timeout(Duration::from_secs(120));
+                if let Some(u) = ua {
+                    req = req.header("User-Agent", u);
+                }
+                let r = req.send().await.map_err(|_| {
+                    let _ = std::fs::remove_file(dest);
+                    AppError::new("NETWORK_ERROR")
+                })?;
+                let st = r.status().as_u16();
+                if matches!(st, 301 | 302 | 303 | 307 | 308) {
+                    let Some(loc) = r.headers().get("location").and_then(|v| v.to_str().ok()) else {
+                        drop(file);
+                        let _ = std::fs::remove_file(dest);
+                        return Err(AppError::new("NETWORK_ERROR"));
+                    };
+                    let base = url::Url::parse(&active_url).map_err(|_| AppError::new("INVALID_URL"))?;
+                    let joined = base.join(loc).map_err(|_| AppError::new("INVALID_URL"))?;
+                    let next_safe = validate_video_cdn_url(joined.as_str(), "youtube")
+                        .ok_or_else(|| AppError::new("FORBIDDEN"))?;
+                    ensure_public_host(&next_safe).await?;
+                    active_url = next_safe;
+                    continue;
+                }
+                resp = Some(r);
+                break;
             }
-            let mut resp = req.send().await.map_err(|_| {
-                let _ = std::fs::remove_file(dest);
-                AppError::new("NETWORK_ERROR")
-            })?;
+            let mut resp = match resp {
+                Some(r) => r,
+                None => {
+                    drop(file);
+                    let _ = std::fs::remove_file(dest);
+                    return Err(AppError::new("NETWORK_ERROR"));
+                }
+            };
             let status = resp.status().as_u16();
             if status == 416 && offset > 0 {
                 break;
@@ -1463,5 +1531,76 @@ mod tests {
             }
         }
         panic!("Live YouTube job timed out");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_pure_rust_facebook_video_download() {
+        let dir = std::env::temp_dir().join(format!("mv_fb_live_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open(&dir.join("app.db"), dir.join("dl")).unwrap());
+        let previews = Arc::new(PreviewCache::new());
+        let engine = Arc::new(AppEngine::new(
+            Arc::clone(&db),
+            previews,
+            tokio::runtime::Handle::current(),
+        ));
+
+        let url = "https://www.facebook.com/share/r/1CtbTq5jzq/";
+        let t0 = Instant::now();
+        let meta = engine
+            .analyze(url)
+            .await
+            .expect("live Facebook analyze failed");
+        println!(
+            "PURE_RUST_FB_ANALYZE ({:.2}s): title={:?} qualities={:?}",
+            t0.elapsed().as_secs_f64(),
+            meta.title,
+            meta.available_qualities
+        );
+        assert!(!meta.available_qualities.is_empty());
+
+        let t1 = Instant::now();
+        let job = engine
+            .enqueue(
+                CreateDownloadRequest {
+                    url: url.into(),
+                    kind: "video".into(),
+                    quality: "best".into(),
+                    container: "mp4".into(),
+                    allow_quality_fallback: true,
+                    image_index: None,
+                    output_dir: Some(dir.join("dl").display().to_string()),
+                },
+                None,
+            )
+            .unwrap();
+
+        for _ in 0..120 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let cur = db.get_job(&job.id).unwrap();
+            if cur.status == "completed" {
+                let out_path = PathBuf::from(cur.output_path.as_deref().unwrap());
+                let probe = mp4_engine::probe_mp4(&out_path).expect("probe_mp4 failed on Facebook video");
+                println!(
+                    "PURE_RUST_FB_DOWNLOAD OK ({:.2}s): {} bytes | {}x{} | v={:?} a={:?} dur={:.1}s",
+                    t1.elapsed().as_secs_f64(),
+                    probe.file_size_bytes,
+                    probe.width.unwrap_or(0),
+                    probe.height.unwrap_or(0),
+                    probe.video_codec,
+                    probe.audio_codec,
+                    probe.duration_seconds.unwrap_or(0.0),
+                );
+                assert!(probe.video_codec.is_some());
+                assert!(probe.file_size_bytes > 50_000);
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+            if cur.status == "failed" {
+                panic!("Live Facebook job failed: {:?} {:?}", cur.error_code, cur.error_message);
+            }
+        }
+        panic!("Live Facebook job timed out");
     }
 }

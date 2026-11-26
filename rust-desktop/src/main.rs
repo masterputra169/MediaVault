@@ -7,6 +7,7 @@ mod errors;
 mod extractors;
 mod mp4_engine;
 mod ui;
+mod ui_kit;
 mod url_policy;
 
 use std::path::{Path, PathBuf};
@@ -84,9 +85,9 @@ fn main() -> eframe::Result<()> {
     ));
 
     let mut viewport = egui::ViewportBuilder::default()
-        .with_title("MediaVault — 100% Pure Rust")
-        .with_inner_size([1140.0, 740.0])
-        .with_min_inner_size([880.0, 620.0]);
+        .with_title("MediaVault")
+        .with_inner_size([1180.0, 760.0])
+        .with_min_inner_size([920.0, 640.0]);
     if let Some(icon) = load_app_icon() {
         viewport = viewport.with_icon(Arc::new(icon));
     }

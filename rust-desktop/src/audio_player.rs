@@ -22,12 +22,12 @@ impl AudioPlayer {
     pub fn play_file(&mut self, path: &Path) -> Result<(), String> {
         self.stop();
         let (stream, handle) =
-            OutputStream::try_default().map_err(|_| "Perangkat audio tidak tersedia.".to_string())?;
+            OutputStream::try_default().map_err(|_| "Audio output device is unavailable.".to_string())?;
         let sink =
-            Sink::try_new(&handle).map_err(|_| "Gagal menyiapkan pemutar audio.".to_string())?;
-        let file = File::open(path).map_err(|_| "File audio tidak ditemukan.".to_string())?;
+            Sink::try_new(&handle).map_err(|_| "Failed to initialize audio player.".to_string())?;
+        let file = File::open(path).map_err(|_| "Audio file was not found.".to_string())?;
         let source = Decoder::new(BufReader::new(file))
-            .map_err(|_| "Format audio tidak dapat didekode.".to_string())?;
+            .map_err(|_| "Unable to decode audio format.".to_string())?;
         sink.append(source);
         sink.play();
         self._stream = Some(stream);

@@ -244,42 +244,61 @@ pub async fn fetch_bytes(
     max_bytes: usize,
     timeout_secs: u64,
 ) -> Result<Vec<u8>, AppError> {
-    ensure_public_host(url_str).await?;
-    let mut req = SHARED_HTTP
-        .get(url_str)
-        .timeout(Duration::from_secs(timeout_secs))
-        .header("Accept-Language", "en-US,en;q=0.9");
-    for (k, v) in headers {
-        req = req.header(*k, *v);
-    }
-    let mut resp = req.send().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
-    let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
-        return Err(AppError::new("LOGIN_REQUIRED"));
-    }
-    if status == 404 {
-        return Err(AppError::new("UNAVAILABLE_MEDIA"));
-    }
-    if !(200..300).contains(&status) {
-        return Err(classify_extractor_error(&format!("HTTP error {status}")));
-    }
-    if let Some(len) = resp.content_length() {
-        if len as usize > max_bytes {
-            return Err(AppError::new("FILE_TOO_LARGE"));
+    let mut current = url_str.to_string();
+    let is_image_cdn = validate_image_url(Some(&current)).is_some();
+
+    for _hop in 0..=5 {
+        ensure_public_host(&current).await?;
+        let mut req = SHARED_HTTP
+            .get(&current)
+            .timeout(Duration::from_secs(timeout_secs))
+            .header("Accept-Language", "en-US,en;q=0.9");
+        for (k, v) in headers {
+            req = req.header(*k, *v);
         }
-    }
-    let mut buf = Vec::new();
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|_| AppError::new("NETWORK_ERROR"))?
-    {
-        if buf.len() + chunk.len() > max_bytes {
-            return Err(AppError::new("FILE_TOO_LARGE"));
+        let mut resp = req.send().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
+        let status = resp.status().as_u16();
+        if matches!(status, 301 | 302 | 303 | 307 | 308) && is_image_cdn {
+            let loc = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| AppError::new("NETWORK_ERROR"))?;
+            let base = Url::parse(&current).map_err(|_| AppError::new("INVALID_URL"))?;
+            let joined = base.join(loc).map_err(|_| AppError::new("INVALID_URL"))?;
+            let safe_next = validate_image_url(Some(joined.as_str()))
+                .ok_or_else(|| AppError::new("FORBIDDEN"))?;
+            current = safe_next;
+            continue;
         }
-        buf.extend_from_slice(&chunk);
+        if status == 401 || status == 403 {
+            return Err(AppError::new("LOGIN_REQUIRED"));
+        }
+        if status == 404 {
+            return Err(AppError::new("UNAVAILABLE_MEDIA"));
+        }
+        if !(200..300).contains(&status) {
+            return Err(classify_extractor_error(&format!("HTTP error {status}")));
+        }
+        if let Some(len) = resp.content_length() {
+            if len as usize > max_bytes {
+                return Err(AppError::new("FILE_TOO_LARGE"));
+            }
+        }
+        let mut buf = Vec::new();
+        while let Some(chunk) = resp
+            .chunk()
+            .await
+            .map_err(|_| AppError::new("NETWORK_ERROR"))?
+        {
+            if buf.len() + chunk.len() > max_bytes {
+                return Err(AppError::new("FILE_TOO_LARGE"));
+            }
+            buf.extend_from_slice(&chunk);
+        }
+        return Ok(buf);
     }
-    Ok(buf)
+    Err(AppError::new("NETWORK_ERROR"))
 }
 
 fn normalize_items(raw: Vec<(String, Option<u32>, Option<u32>)>) -> Vec<ImageItem> {
@@ -763,12 +782,12 @@ pub fn parse_threads_media(html: &str, shortcode: &str) -> Option<ThreadsMediaRe
             let default_title = if !video_variants.is_empty() {
                 username
                     .as_deref()
-                    .map(|u| format!("Video Threads @{u}"))
+                    .map(|u| format!("Threads Video @{u}"))
                     .or_else(|| Some(format!("Threads {shortcode}")))
             } else {
                 username
                     .as_deref()
-                    .map(|u| format!("Foto Threads @{u}"))
+                    .map(|u| format!("Threads Photo @{u}"))
                     .or_else(|| Some(format!("Threads {shortcode}")))
             };
 
@@ -940,16 +959,26 @@ fn fb_walk_relay(
                 }
             }
 
-            // Direct video URLs (HD + SD progressive MP4)
+            // Direct video URLs (HD + SD progressive MP4, including modern progressive_url / hd_src)
             for (key, fallback_h) in [
                 ("browser_native_hd_url", 720u32),
                 ("playable_url_quality_hd", 720u32),
+                ("hd_src_no_ratelimit", 720u32),
+                ("hd_src", 720u32),
+                ("progressive_url", 720u32),
                 ("browser_native_sd_url", 480u32),
                 ("playable_url", 480u32),
+                ("sd_src_no_ratelimit", 480u32),
+                ("sd_src", 480u32),
             ] {
                 if let Some(u) = map.get(key).and_then(Value::as_str) {
                     if is_meta_cdn_video_url(u) {
-                        let h = fb_video_height_from_url(u, fallback_h);
+                        let meta_h = val
+                            .pointer("/metadata/quality")
+                            .and_then(Value::as_str)
+                            .map(|q| if q.eq_ignore_ascii_case("HD") { 720 } else { 480 })
+                            .unwrap_or(fallback_h);
+                        let h = fb_video_height_from_url(u, meta_h);
                         videos.push(DirectVideoVariant {
                             url: u.to_string(),
                             height: h,
@@ -1103,6 +1132,9 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         let s = &cap[1];
         if !s.contains("browser_native_")
             && !s.contains("playable_url")
+            && !s.contains("progressive_url")
+            && !s.contains("hd_src")
+            && !s.contains("sd_src")
             && !s.contains("currMedia")
             && !s.contains("all_subattachments")
             && !s.contains("photo_image")
@@ -1219,9 +1251,9 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         .or(cleaned_og_title.clone())
         .or_else(|| {
             Some(if !video_variants.is_empty() {
-                "Video Facebook".into()
+                "Facebook Video".into()
             } else {
-                "Foto Facebook".into()
+                "Facebook Photo".into()
             })
         });
 

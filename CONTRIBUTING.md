@@ -11,7 +11,7 @@ Thank you for your interest in contributing to **MediaVault**!
 
 ## Running Tests Locally
 
-Prasyarat: **Rust (stable)** saja.
+Prerequisite: **Rust (stable)** only.
 
 ```powershell
 cd rust-desktop
@@ -20,6 +20,6 @@ cargo test --locked
 
 ## Pull Request Checklist
 
-- [ ] `cargo test --locked` lulus tanpa warning maupun error.
-- [ ] Seluruh invarian keamanan (URL/CDN allowlist, `PublicOnlyResolver`, validasi folder anti-UNC, batas ukuran file/gambar) tetap terjaga.
-- [ ] `README.md` diperbarui bila ada perubahan fitur atau arsitektur.
+- [ ] `cargo test --locked` passes with zero errors.
+- [ ] All security invariants (URL/CDN allowlists, `PublicOnlyResolver`, anti-UNC folder validation, file/image decode limits) remain intact.
+- [ ] `README.md` is updated when features or architecture change.
