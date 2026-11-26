@@ -1,0 +1,18 @@
+[Unit]
+Description=MediaVault FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/mediavault/backend
+ExecStart=%h/mediavault/backend/.venv/bin/python -m app.serve
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/mediavault/storage
+PrivateTmp=true
+
+[Install]
+WantedBy=default.target
