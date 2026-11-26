@@ -1,0 +1,37 @@
+# Private local-only web version & internal planning files (excluded from public Desktop repo)
+/backend/
+/frontend/
+/scripts/
+/.env.example
+/PRD.md
+/AGENTS.md
+/CODEX_PROMPT.md
+
+# Secrets & local environment
+/.env
+*.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Local data & logs
+/storage/
+*.db
+*.db-wal
+*.db-shm
+*.db.lock
+*.log
+
+# Rust / Tauri Desktop build artifacts & caches
+/.pnpm-store/
+/rust-desktop/node_modules/
+/rust-desktop/src-tauri/target/
+/rust-desktop/src-tauri/gen/schemas/
+/rust-desktop/*.exe
+/rust-desktop/*.msi
+
+# OS junk
+.DS_Store
+Thumbs.db
