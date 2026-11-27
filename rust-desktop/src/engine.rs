@@ -1585,14 +1585,19 @@ mod tests {
                 }
                 let f = decoded_frame.expect("VideoPlayer did not decode a video frame");
                 println!(
-                    "VIDEO_PLAYER_YT OK: decoded {}x{} frame ({} bytes RGBA) dur={:.1}s has_audio={}",
-                    f.width,
-                    f.height,
-                    f.rgba.len(),
+                    "VIDEO_PLAYER_YT OK: decoded {}x{} frame ({} px) dur={:.1}s has_audio={}",
+                    f.image.size[0],
+                    f.image.size[1],
+                    f.image.pixels.len(),
                     vp.snapshot().duration_secs,
                     vp.snapshot().has_audio,
                 );
-                assert!(f.width > 0 && f.height > 0 && f.rgba.len() == (f.width * f.height * 4) as usize);
+                assert!(
+                    f.image.size[0] > 0
+                        && f.image.size[1] > 0
+                        && f.image.pixels.len() == f.image.size[0] * f.image.size[1]
+                );
+                assert!(vp.snapshot().has_audio, "Expected YouTube MP4 to have audio");
                 vp.stop();
                 let _ = std::fs::remove_dir_all(&dir);
                 return;
@@ -1681,14 +1686,19 @@ mod tests {
                 }
                 let f = decoded_frame.expect("VideoPlayer did not decode a Facebook video frame");
                 println!(
-                    "VIDEO_PLAYER_FB OK: decoded {}x{} frame ({} bytes RGBA) dur={:.1}s has_audio={}",
-                    f.width,
-                    f.height,
-                    f.rgba.len(),
+                    "VIDEO_PLAYER_FB OK: decoded {}x{} frame ({} px) dur={:.1}s has_audio={}",
+                    f.image.size[0],
+                    f.image.size[1],
+                    f.image.pixels.len(),
                     vp.snapshot().duration_secs,
                     vp.snapshot().has_audio,
                 );
-                assert!(f.width > 0 && f.height > 0 && f.rgba.len() == (f.width * f.height * 4) as usize);
+                assert!(
+                    f.image.size[0] > 0
+                        && f.image.size[1] > 0
+                        && f.image.pixels.len() == f.image.size[0] * f.image.size[1]
+                );
+                assert!(vp.snapshot().has_audio, "Expected YouTube MP4 to have audio");
                 vp.stop();
                 let _ = std::fs::remove_dir_all(&dir);
                 return;

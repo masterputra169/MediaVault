@@ -740,13 +740,10 @@ impl eframe::App for MediaVaultApp {
         if self.last_refresh.elapsed() >= poll_interval {
             self.refresh_jobs();
         }
-        if self.counts.active > 0
-            || self.analyzing
-            || self.viewer_loading
-            || self.audio_player.is_active()
-            || self.video_player.is_open()
-        {
-            ctx.request_repaint_after(Duration::from_millis(16));
+        if self.counts.active > 0 || self.analyzing || self.viewer_loading {
+            ctx.request_repaint_after(Duration::from_millis(33));
+        } else if self.audio_player.is_active() && !self.audio_player.is_paused() {
+            ctx.request_repaint_after(Duration::from_millis(100));
         }
 
         if let Some(t) = &self.toast {
@@ -848,8 +845,8 @@ impl eframe::App for MediaVaultApp {
                             "Ready · Zero External Deps",
                             palette.good,
                             palette.good_soft,
-                            None,
-                            true,
+                            Some(Icon::Check),
+                            false,
                         );
                     });
                 });
@@ -866,7 +863,7 @@ impl eframe::App for MediaVaultApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("MediaVault v0.5.0 · 100% Native Rust + SQLite · Local & Private")
+                        RichText::new("MediaVault v0.6.0 · 100% Native Rust + SQLite · Local & Private")
                             .font(font_regular(11.5))
                             .color(palette.muted),
                     );
@@ -2161,19 +2158,18 @@ impl MediaVaultApp {
         let mut audio_set_volume: Option<f32> = None;
         let mut audio_set_muted: Option<bool> = None;
 
-        // Upload newest decoded video frame directly to GPU texture in-place
+        // Zero-clone GPU texture handoff: ColorImage was built directly on the background thread
         if self.viewer_open && is_video_viewer {
             if let Some(frame) = self.video_player.take_new_frame(self.video_frame_seq) {
                 self.video_frame_seq = frame.seq;
-                let img = ColorImage::from_rgba_unmultiplied(
-                    [frame.width as usize, frame.height as usize],
-                    &frame.rgba,
-                );
                 if let Some(tex) = &mut self.viewer_texture {
-                    tex.set(img, TextureOptions::LINEAR);
+                    tex.set(frame.image, TextureOptions::LINEAR);
                 } else {
-                    self.viewer_texture =
-                        Some(ctx.load_texture("viewer_video_frame", img, TextureOptions::LINEAR));
+                    self.viewer_texture = Some(ctx.load_texture(
+                        "viewer_video_frame",
+                        frame.image,
+                        TextureOptions::LINEAR,
+                    ));
                 }
             }
         }

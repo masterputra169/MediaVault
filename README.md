@@ -6,17 +6,17 @@
 [![Release](https://img.shields.io/github/v/release/masterputra169/MediaVault?label=Download&color=6366f1)](https://github.com/masterputra169/MediaVault/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
 
-MediaVault Desktop (`v0.5.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, in-app hardware-accelerated video player, seekable audio player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
+MediaVault Desktop (`v0.6.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, lightweight in-app video player, seekable audio player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
 
 ---
 
 ## Download (Windows x64)
 
-| Package | Direct Download (`v0.5.0`) | Description |
+| Package | Direct Download (`v0.6.0`) | Description |
 |---|---|---|
-| **Windows Installer (Recommended)** | [MediaVault_0.5.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/MediaVault_0.5.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
-| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
-| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
+| **Windows Installer (Recommended)** | [MediaVault_0.6.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/MediaVault_0.6.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
+| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
+| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
 
 Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 
@@ -98,14 +98,14 @@ cargo build --release --locked
 
 # Build Windows NSIS installer (optional)
 makensis installer.nsi
-# Output: rust-desktop\target\release\MediaVault_0.5.0_x64-setup.exe
+# Output: rust-desktop\target\release\MediaVault_0.6.0_x64-setup.exe
 ```
 
 ---
 
 ## Known Limitations
 
-- Platform extraction targets public, unauthenticated posts only. Platforms may occasionally change page markup or enforce IP-level bot checks (for example, TikTok may present a WAF challenge on certain networks, which MediaVault reports cleanly as `LOGIN_REQUIRED` without attempting bypass).
+- Platform extraction targets public, unauthenticated posts only. Platforms may occasionally change page markup or enforce IP-level bot checks (for example, TikTok frequently presents a `SlardarWAF` anti-bot verification challenge on certain networks, which MediaVault reports clearly as `WAF_BLOCKED` without attempting to bypass anti-bot gates).
 - In-app hardware-accelerated `.mp4` video playback uses Windows Media Foundation on Windows 10/11 (with an **External** button always available to open files in your system media player).
 
 ---

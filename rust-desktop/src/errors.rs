@@ -24,6 +24,10 @@ impl AppError {
                 "The source requires sign-in, access verification, or is rate-limiting this network.",
                 false,
             ),
+            "WAF_BLOCKED" => (
+                "This site is showing an anti-bot verification challenge (WAF) on this network. MediaVault does not bypass anti-bot gates.",
+                false,
+            ),
             "GEO_RESTRICTED" => ("This media is restricted in your region.", false),
             "FORMAT_UNAVAILABLE" => ("The selected format or quality is unavailable from the source.", true),
             "EXTRACTOR_FAILED" => ("Failed to extract media from the public source.", true),

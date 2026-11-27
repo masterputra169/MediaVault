@@ -903,7 +903,10 @@ fn parse_facebook_dash_xml(
             }
         } else if (mime.contains("video/mp4") || codecs.contains("avc1"))
             && !codecs.contains("vp9")
+            && !codecs.contains("vp09")
             && !codecs.contains("av01")
+            && !codecs.contains("hev1")
+            && !codecs.contains("hvc1")
         {
             let h = FB_DASH_HEIGHT_RE
                 .captures(attrs)
@@ -2399,7 +2402,7 @@ pub async fn fetch_tiktok_media(url_str: &str) -> Result<TikTokMediaResult, AppE
         return Ok(res);
     }
     if html.contains("SlardarWAF") || html.contains("verify") || html.contains("captcha") {
-        return Err(AppError::new("LOGIN_REQUIRED"));
+        return Err(AppError::new("WAF_BLOCKED"));
     }
     Err(AppError::new("UNAVAILABLE_MEDIA"))
 }
