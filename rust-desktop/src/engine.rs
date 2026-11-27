@@ -1523,6 +1523,32 @@ mod tests {
                 assert!(probe.video_codec.is_some());
                 assert!(probe.audio_codec.is_some());
                 assert!(probe.file_size_bytes > 50_000);
+                // Also verify our native in-app VideoPlayer decodes real RGBA frames!
+                let mut vp = crate::video_player::VideoPlayer::new();
+                vp.open(&out_path, || {});
+                let mut decoded_frame = None;
+                for _ in 0..80 {
+                    if let Some(f) = vp.take_new_frame(0) {
+                        decoded_frame = Some(f);
+                        break;
+                    }
+                    let snap = vp.snapshot();
+                    if let Some(err) = snap.error {
+                        panic!("VideoPlayer error on YouTube MP4: {err}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                let f = decoded_frame.expect("VideoPlayer did not decode a video frame");
+                println!(
+                    "VIDEO_PLAYER_YT OK: decoded {}x{} frame ({} bytes RGBA) dur={:.1}s has_audio={}",
+                    f.width,
+                    f.height,
+                    f.rgba.len(),
+                    vp.snapshot().duration_secs,
+                    vp.snapshot().has_audio,
+                );
+                assert!(f.width > 0 && f.height > 0 && f.rgba.len() == (f.width * f.height * 4) as usize);
+                vp.stop();
                 let _ = std::fs::remove_dir_all(&dir);
                 return;
             }
@@ -1594,6 +1620,31 @@ mod tests {
                 );
                 assert!(probe.video_codec.is_some());
                 assert!(probe.file_size_bytes > 50_000);
+                let mut vp = crate::video_player::VideoPlayer::new();
+                vp.open(&out_path, || {});
+                let mut decoded_frame = None;
+                for _ in 0..80 {
+                    if let Some(f) = vp.take_new_frame(0) {
+                        decoded_frame = Some(f);
+                        break;
+                    }
+                    let snap = vp.snapshot();
+                    if let Some(err) = snap.error {
+                        panic!("VideoPlayer error on Facebook MP4: {err}");
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                let f = decoded_frame.expect("VideoPlayer did not decode a Facebook video frame");
+                println!(
+                    "VIDEO_PLAYER_FB OK: decoded {}x{} frame ({} bytes RGBA) dur={:.1}s has_audio={}",
+                    f.width,
+                    f.height,
+                    f.rgba.len(),
+                    vp.snapshot().duration_secs,
+                    vp.snapshot().has_audio,
+                );
+                assert!(f.width > 0 && f.height > 0 && f.rgba.len() == (f.width * f.height * 4) as usize);
+                vp.stop();
                 let _ = std::fs::remove_dir_all(&dir);
                 return;
             }

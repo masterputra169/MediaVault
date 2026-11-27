@@ -412,6 +412,8 @@ pub enum Icon {
     DoubleLeft,
     DoubleRight,
     External,
+    Volume,
+    VolumeMute,
 }
 
 pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -768,6 +770,42 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
                 ],
                 stroke,
             ));
+        }
+        Icon::Volume => {
+            let body = vec![
+                Pos2::new(c.x - s * 0.72, c.y - s * 0.28),
+                Pos2::new(c.x - s * 0.36, c.y - s * 0.28),
+                Pos2::new(c.x + s * 0.04, c.y - s * 0.62),
+                Pos2::new(c.x + s * 0.04, c.y + s * 0.62),
+                Pos2::new(c.x - s * 0.36, c.y + s * 0.28),
+                Pos2::new(c.x - s * 0.72, c.y + s * 0.28),
+            ];
+            painter.add(Shape::convex_polygon(body, color, Stroke::NONE));
+            for (r, alpha) in [(s * 0.42, 220u8), (s * 0.68, 175u8)] {
+                let mut pts = Vec::with_capacity(9);
+                for i in 0..=8 {
+                    let a = -0.78 + (i as f32 / 8.0) * 1.56;
+                    pts.push(Pos2::new(c.x + s * 0.08 + a.cos() * r, c.y + a.sin() * r));
+                }
+                painter.add(Shape::line(pts, Stroke::new(sw * 0.9, with_alpha(color, alpha))));
+            }
+        }
+        Icon::VolumeMute => {
+            let body = vec![
+                Pos2::new(c.x - s * 0.72, c.y - s * 0.28),
+                Pos2::new(c.x - s * 0.36, c.y - s * 0.28),
+                Pos2::new(c.x + s * 0.02, c.y - s * 0.62),
+                Pos2::new(c.x + s * 0.02, c.y + s * 0.62),
+                Pos2::new(c.x - s * 0.36, c.y + s * 0.28),
+                Pos2::new(c.x - s * 0.72, c.y + s * 0.28),
+            ];
+            painter.add(Shape::convex_polygon(body, with_alpha(color, 185), Stroke::NONE));
+            let x0 = c.x + s * 0.24;
+            let x1 = c.x + s * 0.74;
+            let y0 = c.y - s * 0.26;
+            let y1 = c.y + s * 0.26;
+            painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], stroke);
+            painter.line_segment([Pos2::new(x1, y0), Pos2::new(x0, y1)], stroke);
         }
     }
 }

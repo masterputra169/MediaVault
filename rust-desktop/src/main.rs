@@ -9,6 +9,7 @@ mod mp4_engine;
 mod ui;
 mod ui_kit;
 mod url_policy;
+mod video_player;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

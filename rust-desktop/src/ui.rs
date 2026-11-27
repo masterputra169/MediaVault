@@ -27,6 +27,7 @@ use crate::ui_kit::{
     show_animated_modal, status_pill, subtle_tag, sync_window_chrome, with_alpha, BtnVariant, Icon,
     Palette,
 };
+use crate::video_player::VideoPlayer;
 
 const PLATFORMS: &[(&str, &str)] = &[
     ("", "All platforms"),
@@ -137,7 +138,9 @@ pub struct MediaVaultApp {
     viewer_loading: bool,
     viewer_content: Option<ViewerContent>,
     viewer_texture: Option<TextureHandle>,
+    video_frame_seq: u64,
     audio_player: AudioPlayer,
+    video_player: VideoPlayer,
 
     // GPU Texture cache for thumbnails
     textures: HashMap<String, TextureHandle>,
@@ -221,7 +224,9 @@ impl MediaVaultApp {
             viewer_loading: false,
             viewer_content: None,
             viewer_texture: None,
+            video_frame_seq: 0,
             audio_player: AudioPlayer::new(),
+            video_player: VideoPlayer::new(),
             textures: HashMap::new(),
             loading_tokens: HashSet::new(),
             toast: None,
@@ -343,7 +348,9 @@ impl MediaVaultApp {
 
     fn open_completed_preview(&mut self, ctx: &egui::Context, job: &JobRecord) {
         self.audio_player.stop();
+        self.video_player.stop();
         self.viewer_texture = None;
+        self.video_frame_seq = 0;
         self.viewer_content = None;
         self.viewer_open = true;
         self.viewer_loading = true;
@@ -561,6 +568,14 @@ impl MediaVaultApp {
                             self.viewer_texture =
                                 Some(ctx.load_texture("viewer_active", img, TextureOptions::LINEAR));
                         }
+                        ViewerContent::Video { path, .. } => {
+                            self.video_frame_seq = 0;
+                            self.viewer_texture = None;
+                            let ctx_repaint = ctx.clone();
+                            self.video_player.open(Path::new(path), move || {
+                                ctx_repaint.request_repaint();
+                            });
+                        }
                         _ => {}
                     }
                     self.viewer_content = Some(content);
@@ -602,6 +617,7 @@ impl eframe::App for MediaVaultApp {
             || self.analyzing
             || self.viewer_loading
             || self.audio_player.is_active()
+            || self.video_player.is_open()
         {
             ctx.request_repaint_after(Duration::from_millis(16));
         }
@@ -723,7 +739,7 @@ impl eframe::App for MediaVaultApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("MediaVault v0.3.0 · 100% Native Rust + SQLite · Local & Private")
+                        RichText::new("MediaVault v0.4.0 · 100% Native Rust + SQLite · Local & Private")
                             .font(font_regular(11.5))
                             .color(palette.muted),
                     );
@@ -1895,8 +1911,58 @@ impl MediaVaultApp {
     }
 
     fn render_viewer_modal(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let is_video_viewer = matches!(self.viewer_content, Some(ViewerContent::Video { .. }));
+        let mut video_seek_to: Option<f64> = None;
+        let mut video_toggle_play = false;
+        let mut video_set_volume: Option<f32> = None;
+        let mut video_set_muted: Option<bool> = None;
+
+        // Upload newest decoded video frame directly to GPU texture in-place
+        if self.viewer_open && is_video_viewer {
+            if let Some(frame) = self.video_player.take_new_frame(self.video_frame_seq) {
+                self.video_frame_seq = frame.seq;
+                let img = ColorImage::from_rgba_unmultiplied(
+                    [frame.width as usize, frame.height as usize],
+                    &frame.rgba,
+                );
+                if let Some(tex) = &mut self.viewer_texture {
+                    tex.set(img, TextureOptions::LINEAR);
+                } else {
+                    self.viewer_texture =
+                        Some(ctx.load_texture("viewer_video_frame", img, TextureOptions::LINEAR));
+                }
+            }
+        }
+
+        let video_snap = if is_video_viewer {
+            Some(self.video_player.snapshot())
+        } else {
+            None
+        };
+
         if self.viewer_open {
-            if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+            if is_video_viewer {
+                if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                    video_toggle_play = true;
+                } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                    if let Some(s) = &video_snap {
+                        video_seek_to = Some((s.position_secs - 5.0).max(0.0));
+                    }
+                } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                    if let Some(s) = &video_snap {
+                        let max_t = if s.duration_secs > 0.0 {
+                            s.duration_secs
+                        } else {
+                            s.position_secs + 5.0
+                        };
+                        video_seek_to = Some((s.position_secs + 5.0).min(max_t));
+                    }
+                } else if ctx.input(|i| i.key_pressed(egui::Key::M)) {
+                    if let Some(s) = &video_snap {
+                        video_set_muted = Some(!s.muted);
+                    }
+                }
+            } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
                 self.switch_album_slide(ctx, -1);
             } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
                 self.switch_album_slide(ctx, 1);
@@ -1932,17 +1998,26 @@ impl MediaVaultApp {
         let title_owned = modal_title.to_string();
         let sub_owned = modal_sub.map(String::from);
 
+        // Generous responsive cinema modal so both 16:9 landscape and 9:16 portrait videos shine!
+        let screen = ctx.screen_rect();
+        let modal_w = (screen.width() - 80.0).clamp(760.0, 960.0);
+        let modal_h = (screen.height() - 72.0).clamp(540.0, 670.0);
+        let stage_h = (modal_h - 210.0).clamp(320.0, 470.0);
+
         show_animated_modal(
             ctx,
             "modal_viewer",
             &title_owned,
             sub_owned.as_deref(),
-            Vec2::new(760.0, 535.0),
+            Vec2::new(modal_w, modal_h),
             palette,
             &mut open,
             |ui| {
                 if self.viewer_loading {
-                    let (r, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 340.0), Sense::hover());
+                    let (r, _) = ui.allocate_exact_size(
+                        Vec2::new(ui.available_width(), stage_h),
+                        Sense::hover(),
+                    );
                     let t = ui.input(|i| i.time);
                     draw_spinner(ui.painter(), r.center(), 18.0, palette.accent, t);
                     ui.ctx().request_repaint();
@@ -1951,12 +2026,12 @@ impl MediaVaultApp {
 
                 match &self.viewer_content {
                     Some(ViewerContent::Image { path, .. }) => {
-                        let box_sz = Vec2::new(ui.available_width(), 365.0);
+                        let box_sz = Vec2::new(ui.available_width(), stage_h + 36.0);
                         let (rect, _) = ui.allocate_exact_size(box_sz, Sense::hover());
                         ui.painter()
                             .rect_filled(rect, CornerRadius::same(10), palette.input_bg);
                         if let Some(tex) = &self.viewer_texture {
-                            let sz = fit_aspect(tex.size_vec2(), box_sz - Vec2::splat(12.0));
+                            let sz = fit_aspect_cinema(tex.size_vec2(), box_sz - Vec2::splat(12.0));
                             egui::Image::new((tex.id(), sz))
                                 .corner_radius(CornerRadius::same(8))
                                 .paint_at(ui, Rect::from_center_size(rect.center(), sz));
@@ -2003,12 +2078,12 @@ impl MediaVaultApp {
                         current_idx,
                         ..
                     }) => {
-                        let box_sz = Vec2::new(ui.available_width(), 350.0);
+                        let box_sz = Vec2::new(ui.available_width(), stage_h + 28.0);
                         let (rect, _) = ui.allocate_exact_size(box_sz, Sense::hover());
                         ui.painter()
                             .rect_filled(rect, CornerRadius::same(10), palette.input_bg);
                         if let Some(tex) = &self.viewer_texture {
-                            let sz = fit_aspect(tex.size_vec2(), box_sz - Vec2::splat(12.0));
+                            let sz = fit_aspect_cinema(tex.size_vec2(), box_sz - Vec2::splat(12.0));
                             egui::Image::new((tex.id(), sz))
                                 .corner_radius(CornerRadius::same(8))
                                 .paint_at(ui, Rect::from_center_size(rect.center(), sz));
@@ -2081,7 +2156,7 @@ impl MediaVaultApp {
                             .fill(palette.input_bg)
                             .stroke(Stroke::new(1.0, palette.border))
                             .corner_radius(CornerRadius::same(12))
-                            .inner_margin(Margin::symmetric(24, 36))
+                            .inner_margin(Margin::symmetric(24, 52))
                             .show(ui, |ui| {
                                 ui.set_width(ui.available_width());
                                 ui.vertical_centered(|ui| {
@@ -2189,28 +2264,274 @@ impl MediaVaultApp {
                         thumb_token,
                         ..
                     }) => {
-                        let box_sz = Vec2::new(ui.available_width(), 300.0);
-                        let (rect, _) = ui.allocate_exact_size(box_sz, Sense::hover());
+                        let snap = video_snap.clone().unwrap_or_default();
+                        let duration = if snap.duration_secs > 0.0 {
+                            snap.duration_secs
+                        } else {
+                            probe
+                                .as_ref()
+                                .and_then(|p| p.duration_seconds)
+                                .unwrap_or(0.0)
+                        };
+
+                        // Cinema Video Stage — fits both Landscape 16:9 and Portrait 9:16 cleanly
+                        let box_sz = Vec2::new(ui.available_width(), stage_h);
+                        let (stage_rect, stage_resp) =
+                            ui.allocate_exact_size(box_sz, Sense::click());
+                        if stage_resp.hovered() {
+                            ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                        }
+                        if stage_resp.clicked() && snap.error.is_none() {
+                            video_toggle_play = true;
+                        }
+
+                        let cinema_bg = Color32::from_rgb(5, 7, 12);
                         ui.painter()
-                            .rect_filled(rect, CornerRadius::same(10), palette.input_bg);
-                        if let Some(tex) = thumb_token.as_deref().and_then(|t| self.textures.get(t))
-                        {
-                            let sz = fit_aspect(tex.size_vec2(), box_sz - Vec2::splat(10.0));
+                            .rect_filled(stage_rect, CornerRadius::same(12), cinema_bg);
+
+                        if let Some(tex) = &self.viewer_texture {
+                            let sz = fit_aspect_cinema(tex.size_vec2(), box_sz - Vec2::splat(6.0));
                             egui::Image::new((tex.id(), sz))
                                 .corner_radius(CornerRadius::same(8))
-                                .paint_at(ui, Rect::from_center_size(rect.center(), sz));
-                        } else {
-                            draw_icon(
+                                .paint_at(ui, Rect::from_center_size(stage_rect.center(), sz));
+                        } else if let Some(tex) =
+                            thumb_token.as_deref().and_then(|t| self.textures.get(t))
+                        {
+                            let sz = fit_aspect_cinema(tex.size_vec2(), box_sz - Vec2::splat(6.0));
+                            egui::Image::new((tex.id(), sz))
+                                .corner_radius(CornerRadius::same(8))
+                                .paint_at(ui, Rect::from_center_size(stage_rect.center(), sz));
+                            if snap.error.is_none() {
+                                let t = ui.input(|i| i.time);
+                                draw_spinner(
+                                    ui.painter(),
+                                    stage_rect.center(),
+                                    18.0,
+                                    palette.accent,
+                                    t,
+                                );
+                            }
+                        } else if snap.error.is_none() {
+                            let t = ui.input(|i| i.time);
+                            draw_spinner(
                                 ui.painter(),
-                                Rect::from_center_size(rect.center(), Vec2::splat(34.0)),
-                                Icon::Video,
-                                palette.muted,
+                                stage_rect.center(),
+                                18.0,
+                                palette.accent,
+                                t,
                             );
                         }
 
-                        if let Some(info) = probe {
+                        // Translucent center Play button overlay when paused or ended
+                        let show_play_badge =
+                            snap.error.is_none() && self.viewer_texture.is_some() && !snap.playing;
+                        let badge_alpha = ctx.animate_bool_with_time(
+                            Id::new("vid_pause_overlay"),
+                            show_play_badge,
+                            0.14,
+                        );
+                        if badge_alpha > 0.02 {
+                            ui.painter().circle_filled(
+                                stage_rect.center(),
+                                30.0,
+                                Color32::from_rgba_unmultiplied(
+                                    9,
+                                    11,
+                                    17,
+                                    (badge_alpha * 185.0) as u8,
+                                ),
+                            );
+                            ui.painter().circle_stroke(
+                                stage_rect.center(),
+                                30.0,
+                                Stroke::new(
+                                    1.4,
+                                    with_alpha(Color32::WHITE, (badge_alpha * 130.0) as u8),
+                                ),
+                            );
+                            draw_icon(
+                                ui.painter(),
+                                Rect::from_center_size(
+                                    stage_rect.center() + Vec2::new(2.0, 0.0),
+                                    Vec2::splat(22.0),
+                                ),
+                                Icon::Play,
+                                with_alpha(Color32::WHITE, (badge_alpha * 255.0) as u8),
+                            );
+                        }
+
+                        ui.painter().rect_stroke(
+                            stage_rect,
+                            CornerRadius::same(12),
+                            Stroke::new(1.0, palette.border),
+                            StrokeKind::Inside,
+                        );
+
+                        if let Some(err) = &snap.error {
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                let (ir, _) =
+                                    ui.allocate_exact_size(Vec2::splat(14.0), Sense::hover());
+                                draw_icon(ui.painter(), ir, Icon::Warning, palette.warn);
+                                ui.label(
+                                    RichText::new(err)
+                                        .font(font_regular(12.0))
+                                        .color(palette.warn),
+                                );
+                            });
+                        } else {
+                            // Interactive Seek Timeline Scrubber
                             ui.add_space(10.0);
-                            ui.horizontal_wrapped(|ui| {
+                            let scrub_w = ui.available_width();
+                            let (scrub_rect, scrub_resp) =
+                                ui.allocate_exact_size(Vec2::new(scrub_w, 16.0), Sense::click_and_drag());
+                            if scrub_resp.hovered() || scrub_resp.dragged() {
+                                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                            }
+                            let frac = if duration > 0.0 {
+                                (snap.position_secs / duration).clamp(0.0, 1.0) as f32
+                            } else {
+                                0.0
+                            };
+                            let track_h = 5.0;
+                            let track_rect = Rect::from_center_size(
+                                scrub_rect.center(),
+                                Vec2::new(scrub_w, track_h),
+                            );
+                            ui.painter()
+                                .rect_filled(track_rect, CornerRadius::same(3), palette.inset);
+                            let fill_w = (scrub_w * frac).max(4.0);
+                            let fill_rect =
+                                Rect::from_min_size(track_rect.min, Vec2::new(fill_w, track_h));
+                            ui.painter()
+                                .rect_filled(fill_rect, CornerRadius::same(3), palette.accent);
+
+                            let thumb_hov = ctx.animate_bool_with_time(
+                                Id::new("vid_scrub_hov"),
+                                scrub_resp.hovered() || scrub_resp.dragged(),
+                                0.12,
+                            );
+                            let thumb_x = track_rect.left() + scrub_w * frac;
+                            let thumb_r = 5.5 + thumb_hov * 2.5;
+                            ui.painter().circle_filled(
+                                Pos2::new(thumb_x, track_rect.center().y),
+                                thumb_r + 2.5,
+                                with_alpha(palette.accent, (thumb_hov * 75.0) as u8),
+                            );
+                            ui.painter().circle_filled(
+                                Pos2::new(thumb_x, track_rect.center().y),
+                                thumb_r,
+                                Color32::WHITE,
+                            );
+
+                            if (scrub_resp.clicked() || scrub_resp.dragged()) && duration > 0.0 {
+                                if let Some(ptr) = scrub_resp.interact_pointer_pos() {
+                                    let next_frac =
+                                        ((ptr.x - track_rect.left()) / scrub_w).clamp(0.0, 1.0);
+                                    video_seek_to = Some(next_frac as f64 * duration);
+                                }
+                            }
+                        }
+
+                        // Bottom Controls Bar
+                        ui.add_space(6.0);
+                        ui.horizontal(|ui| {
+                            if snap.error.is_none() {
+                                let (play_lbl, play_ic) = if snap.playing {
+                                    ("Pause", Icon::Pause)
+                                } else if snap.ended {
+                                    ("Replay", Icon::Retry)
+                                } else {
+                                    ("Play", Icon::Play)
+                                };
+                                if anim_button(
+                                    ui,
+                                    "vid_play_toggle",
+                                    play_lbl,
+                                    Some(play_ic),
+                                    BtnVariant::Primary,
+                                    34.0,
+                                    Some(92.0),
+                                    true,
+                                    false,
+                                    palette,
+                                )
+                                .clicked()
+                                {
+                                    video_toggle_play = true;
+                                }
+
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} / {}",
+                                        nice_duration(snap.position_secs),
+                                        nice_duration(duration)
+                                    ))
+                                    .font(font_semibold(12.0))
+                                    .color(palette.text_secondary),
+                                );
+
+                                if snap.has_audio {
+                                    let vol_icon = if snap.muted || snap.volume <= 0.01 {
+                                        Icon::VolumeMute
+                                    } else {
+                                        Icon::Volume
+                                    };
+                                    if anim_button(
+                                        ui,
+                                        "vid_mute_btn",
+                                        "",
+                                        Some(vol_icon),
+                                        BtnVariant::Secondary,
+                                        32.0,
+                                        Some(32.0),
+                                        true,
+                                        false,
+                                        palette,
+                                    )
+                                    .clicked()
+                                    {
+                                        video_set_muted = Some(!snap.muted);
+                                    }
+
+                                    // Compact sleek volume bar
+                                    let vol_w = 72.0;
+                                    let (vol_rect, vol_resp) = ui.allocate_exact_size(
+                                        Vec2::new(vol_w, 16.0),
+                                        Sense::click_and_drag(),
+                                    );
+                                    if vol_resp.hovered() || vol_resp.dragged() {
+                                        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    let eff_vol = if snap.muted { 0.0 } else { snap.volume };
+                                    let vt = Rect::from_center_size(
+                                        vol_rect.center(),
+                                        Vec2::new(vol_w, 4.0),
+                                    );
+                                    ui.painter().rect_filled(vt, CornerRadius::same(2), palette.inset);
+                                    let vf = Rect::from_min_size(
+                                        vt.min,
+                                        Vec2::new((vol_w * eff_vol).max(2.0), 4.0),
+                                    );
+                                    ui.painter().rect_filled(vf, CornerRadius::same(2), palette.accent);
+                                    ui.painter().circle_filled(
+                                        Pos2::new(vt.left() + vol_w * eff_vol, vt.center().y),
+                                        4.5,
+                                        Color32::WHITE,
+                                    );
+                                    if vol_resp.clicked() || vol_resp.dragged() {
+                                        if let Some(ptr) = vol_resp.interact_pointer_pos() {
+                                            let v = ((ptr.x - vt.left()) / vol_w).clamp(0.0, 1.0);
+                                            video_set_volume = Some(v);
+                                            if snap.muted && v > 0.02 {
+                                                video_set_muted = Some(false);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if let Some(info) = probe {
                                 if let (Some(w), Some(h)) = (info.width, info.height) {
                                     status_pill(
                                         ui,
@@ -2221,52 +2542,45 @@ impl MediaVaultApp {
                                         false,
                                     );
                                 }
-                                if let Some(d) = info.duration_seconds {
-                                    subtle_tag(ui, &format!("Duration {}", nice_duration(d)), palette);
-                                }
                                 if let Some(vc) = &info.video_codec {
-                                    subtle_tag(ui, &format!("Video: {vc}"), palette);
+                                    subtle_tag(ui, vc, palette);
                                 }
-                                if let Some(ac) = &info.audio_codec {
-                                    subtle_tag(ui, &format!("Audio: {ac}"), palette);
+                            }
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if anim_button(
+                                    ui,
+                                    "vid_folder",
+                                    "Folder",
+                                    Some(Icon::Folder),
+                                    BtnVariant::Secondary,
+                                    34.0,
+                                    None,
+                                    true,
+                                    false,
+                                    palette,
+                                )
+                                .clicked()
+                                {
+                                    open_explorer_path = Some(path.clone());
+                                }
+                                if anim_button(
+                                    ui,
+                                    "vid_play_ext",
+                                    "External",
+                                    Some(Icon::External),
+                                    BtnVariant::Secondary,
+                                    34.0,
+                                    None,
+                                    true,
+                                    false,
+                                    palette,
+                                )
+                                .clicked()
+                                {
+                                    open_player_path = Some(path.clone());
                                 }
                             });
-                        }
-
-                        ui.add_space(14.0);
-                        ui.horizontal(|ui| {
-                            if anim_button(
-                                ui,
-                                "vid_play_ext",
-                                "Open in Video Player",
-                                Some(Icon::External),
-                                BtnVariant::Primary,
-                                36.0,
-                                None,
-                                true,
-                                false,
-                                palette,
-                            )
-                            .clicked()
-                            {
-                                open_player_path = Some(path.clone());
-                            }
-                            if anim_button(
-                                ui,
-                                "vid_folder",
-                                "Show in Folder",
-                                Some(Icon::Folder),
-                                BtnVariant::Secondary,
-                                36.0,
-                                None,
-                                true,
-                                false,
-                                palette,
-                            )
-                            .clicked()
-                            {
-                                open_explorer_path = Some(path.clone());
-                            }
                         });
                     }
                     Some(ViewerContent::Error(msg)) => {
@@ -2281,6 +2595,18 @@ impl MediaVaultApp {
             },
         );
 
+        if video_toggle_play {
+            self.video_player.toggle_play();
+        }
+        if let Some(t) = video_seek_to {
+            self.video_player.seek(t);
+        }
+        if let Some(v) = video_set_volume {
+            self.video_player.set_volume(v);
+        }
+        if let Some(m) = video_set_muted {
+            self.video_player.set_muted(m);
+        }
         if delta_slide != 0 {
             self.switch_album_slide(ctx, delta_slide);
         }
@@ -2309,7 +2635,9 @@ impl MediaVaultApp {
             self.viewer_open = false;
             self.viewer_content = None;
             self.viewer_texture = None;
+            self.video_frame_seq = 0;
             self.audio_player.stop();
+            self.video_player.stop();
         }
     }
 
@@ -2812,6 +3140,16 @@ fn fit_aspect(src: Vec2, max: Vec2) -> Vec2 {
         return max;
     }
     let scale = (max.x / src.x).min(max.y / src.y).min(1.0);
+    Vec2::new((src.x * scale).max(1.0), (src.y * scale).max(1.0))
+}
+
+/// Scales media cleanly to fill the cinema preview stage while preserving exact aspect ratio
+/// (so both widescreen 16:9 landscape and tall 9:16 portrait videos fill the stage crisply).
+fn fit_aspect_cinema(src: Vec2, max: Vec2) -> Vec2 {
+    if src.x <= 0.0 || src.y <= 0.0 {
+        return max;
+    }
+    let scale = (max.x / src.x).min(max.y / src.y).min(2.5);
     Vec2::new((src.x * scale).max(1.0), (src.y * scale).max(1.0))
 }
 

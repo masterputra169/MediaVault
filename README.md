@@ -6,17 +6,17 @@
 [![Release](https://img.shields.io/github/v/release/masterputra169/MediaVault?label=Download&color=6366f1)](https://github.com/masterputra169/MediaVault/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
 
-MediaVault Desktop (`v0.3.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, audio decoder/player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
+MediaVault Desktop (`v0.4.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, in-app hardware-accelerated video player, audio decoder/player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
 
 ---
 
 ## Download (Windows x64)
 
-| Package | Direct Download (`v0.3.0`) | Description |
+| Package | Direct Download (`v0.4.0`) | Description |
 |---|---|---|
-| **Windows Installer (Recommended)** | [MediaVault_0.3.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.3.0/MediaVault_0.3.0_x64-setup.exe) | Per-user NSIS installer (~4.6 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
-| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.3.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
-| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.3.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
+| **Windows Installer (Recommended)** | [MediaVault_0.4.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/MediaVault_0.4.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
+| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
+| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
 
 Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 
@@ -39,7 +39,7 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
   - **TikTok** — Public video/photo posts (strictly respects anti-bot/WAF boundaries without bypass).
 - **Built-in Pure-Rust Media Engine**
   - **ISO-BMFF MP4 / fMP4 Muxer & Probe (`mp4_engine.rs`)**: Parses standard `stbl` and fragmented DASH (`moof`/`trun`) streams, losslessly muxes adaptive H.264 video + AAC audio into interleaved `co64` fast-start `.mp4`, extracts lossless `.m4a`, transcodes 16-bit PCM `.wav`, and probes resolution/duration/codecs in `<1 ms`.
-  - **In-App Media Preview**: View downloaded photos & multi-slide ZIP albums with keyboard navigation (`←`/`→`), play `.m4a`/`.wav` audio natively inside the app (`Symphonia` + `Rodio` with animated equalizer), and inspect `.mp4` technical specs with one-click handoff to your default Windows video player.
+  - **In-App Video, Audio & Photo Preview**: Play downloaded `.mp4` videos **directly inside the app** with synchronized audio, interactive timeline seeking, volume/mute controls, keyboard shortcuts (`Space`, `←`/`→`, `M`), and a responsive cinema stage built for both **widescreen 16:9 landscape** and **9:16 portrait** videos (powered by built-in Windows Media Foundation + `Rodio` — zero FFmpeg/VLC). View photos & multi-slide ZIP albums with `←`/`→` navigation and play `.m4a`/`.wav` audio natively via `Symphonia` + `Rodio`.
 - **Complete Download Manager**
   - Live progress bar with transfer speed (`MB/s`), byte count, and ETA.
   - Cancel active downloads cleanly, retry failed items, move completed files to another folder, filter by media type/platform/search query, and paginate download history persisted in local SQLite.
@@ -52,7 +52,7 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 |---|---|---|
 | Native Entrypoint | [`rust-desktop/src/main.rs`](rust-desktop/src/main.rs) | Native window bootstrap, Tokio async runtime, bounded `crash.log` |
 | Modern UI & Design System | [`rust-desktop/src/ui.rs`](rust-desktop/src/ui.rs), [`rust-desktop/src/ui_kit.rs`](rust-desktop/src/ui_kit.rs) | Animated native UI, custom vector icons, Windows 11 DWM titlebar sync, GPU thumbnail/album viewer |
-| Pure-Rust MP4 & Audio Engine | [`rust-desktop/src/mp4_engine.rs`](rust-desktop/src/mp4_engine.rs), [`rust-desktop/src/audio_player.rs`](rust-desktop/src/audio_player.rs) | ISO-BMFF muxer/demuxer/probe, lossless M4A extraction, WAV transcoding, in-app audio playback |
+| Pure-Rust MP4 & Media Players | [`rust-desktop/src/mp4_engine.rs`](rust-desktop/src/mp4_engine.rs), [`rust-desktop/src/video_player.rs`](rust-desktop/src/video_player.rs), [`rust-desktop/src/audio_player.rs`](rust-desktop/src/audio_player.rs) | ISO-BMFF muxer/demuxer/probe, lossless M4A extraction, WAV transcoding, real-time in-app MP4 video player (Windows Media Foundation + Rodio), and native audio player |
 | 7-Platform Extractors | [`rust-desktop/src/extractors.rs`](rust-desktop/src/extractors.rs) | Native HTTP/JSON/HTML extractors, bounded GPU thumbnail `PreviewCache`, streaming ZIP album bundler |
 | Download Queue & FS Ops | [`rust-desktop/src/engine.rs`](rust-desktop/src/engine.rs) | Concurrent job runner, cancelable streaming, validated CDN redirects, ranged YouTube streaming, safe Explorer integration |
 | URL & SSRF Security Policy | [`rust-desktop/src/url_policy.rs`](rust-desktop/src/url_policy.rs) | Strict platform & CDN allowlists, `PublicOnlyResolver` (anti-SSRF & DNS rebinding), IPv4/IPv6 global unicast enforcement |
@@ -97,7 +97,7 @@ cargo build --release --locked
 
 # Build Windows NSIS installer (optional)
 makensis installer.nsi
-# Output: rust-desktop\target\release\MediaVault_0.3.0_x64-setup.exe
+# Output: rust-desktop\target\release\MediaVault_0.4.0_x64-setup.exe
 ```
 
 ---
@@ -105,7 +105,7 @@ makensis installer.nsi
 ## Known Limitations
 
 - Platform extraction targets public, unauthenticated posts only. Platforms may occasionally change page markup or enforce IP-level bot checks (for example, TikTok may present a WAF challenge on certain networks, which MediaVault reports cleanly as `LOGIN_REQUIRED` without attempting bypass).
-- In-app preview renders photos, ZIP albums, and `.m4a`/`.wav` audio natively; for `.mp4` videos, MediaVault displays pure-Rust probed technical metadata alongside a one-click **Open in Video Player** button to launch your system's native video player.
+- In-app hardware-accelerated `.mp4` video playback uses Windows Media Foundation on Windows 10/11 (with an **External** button always available to open files in your system media player).
 
 ---
 
