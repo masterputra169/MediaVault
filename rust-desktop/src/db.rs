@@ -54,6 +54,8 @@ pub struct JobCounts {
     pub video: i64,
     pub audio: i64,
     pub image: i64,
+    pub completed: i64,
+    pub failed: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -373,6 +375,23 @@ impl Database {
         Ok(job)
     }
 
+    /// Removes completed history entries from SQLite only (never touches files on disk).
+    pub fn clear_completed_history(&self) -> Result<usize, AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM jobs WHERE status = 'completed'", [])
+            .map_err(|_| AppError::new("STORAGE_UNAVAILABLE"))
+    }
+
+    /// Removes failed/cancelled/interrupted history entries from SQLite only.
+    pub fn clear_failed_history(&self) -> Result<usize, AppError> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM jobs WHERE status IN ('failed', 'cancelled', 'interrupted')",
+            [],
+        )
+        .map_err(|_| AppError::new("STORAGE_UNAVAILABLE"))
+    }
+
     pub fn list_jobs(
         &self,
         limit: i64,
@@ -447,7 +466,9 @@ impl Database {
                     SUM(CASE WHEN status IN ('queued','downloading','processing') THEN 1 ELSE 0 END),
                     SUM(CASE WHEN kind = 'video' THEN 1 ELSE 0 END),
                     SUM(CASE WHEN kind = 'audio' THEN 1 ELSE 0 END),
-                    SUM(CASE WHEN kind = 'image' THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN kind = 'image' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END),
+                    SUM(CASE WHEN status IN ('failed','cancelled','interrupted') THEN 1 ELSE 0 END)
                  FROM jobs",
                 [],
                 |r| {
@@ -457,6 +478,8 @@ impl Database {
                         video: r.get::<_, Option<i64>>(2)?.unwrap_or(0),
                         audio: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
                         image: r.get::<_, Option<i64>>(4)?.unwrap_or(0),
+                        completed: r.get::<_, Option<i64>>(5)?.unwrap_or(0),
+                        failed: r.get::<_, Option<i64>>(6)?.unwrap_or(0),
                     })
                 },
             )
@@ -726,6 +749,12 @@ mod tests {
             Some(moved_path.to_string_lossy().as_ref())
         );
         assert!(updated.file_available);
+        assert_eq!(db.list_jobs(5, 0, None, None, None, false).unwrap().counts.completed, 2);
+
+        db.mark_failed("2", "NETWORK_ERROR", "Connection failed");
+        assert_eq!(db.clear_failed_history().unwrap(), 1);
+        assert_eq!(db.clear_completed_history().unwrap(), 1);
+        assert_eq!(db.list_jobs(5, 0, None, None, None, false).unwrap().total, 0);
 
         let _ = std::fs::remove_dir_all(dir);
     }

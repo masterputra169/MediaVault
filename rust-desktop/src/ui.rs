@@ -15,10 +15,12 @@ use crate::audio_player::AudioPlayer;
 use crate::db::{validate_download_dir, Database, JobCounts, JobRecord, Preferences};
 use crate::engine::{
     move_job_file, open_file_in_explorer, open_folder_in_explorer, open_media_in_default_player,
-    AppEngine, CreateDownloadRequest, MediaMetadata,
+    open_release_page_in_browser, AppEngine, CreateDownloadRequest, MediaMetadata,
 };
 use crate::errors::AppError;
-use crate::extractors::{decode_preview_rgba, PreviewCache, PreviewRgba};
+use crate::extractors::{
+    check_latest_github_release, decode_preview_rgba, PreviewCache, PreviewRgba, UpdateCheckResult,
+};
 use crate::mp4_engine::{probe_mp4, Mp4ProbeInfo};
 use crate::ui_kit::{
     anim_button, animated_progress_bar, animated_tab_bar, apply_modern_theme, draw_ambient_glow,
@@ -57,6 +59,7 @@ enum AsyncMsg {
     AnalyzeDone(Result<MediaMetadata, AppError>),
     ThumbLoaded(String, Result<Arc<PreviewRgba>, ()>),
     ViewerReady(ViewerContent),
+    UpdateCheckDone(Result<UpdateCheckResult, String>),
 }
 
 enum ViewerContent {
@@ -136,11 +139,16 @@ pub struct MediaVaultApp {
     // Completed media viewer modal
     viewer_open: bool,
     viewer_loading: bool,
+    viewer_expanded: bool,
     viewer_content: Option<ViewerContent>,
     viewer_texture: Option<TextureHandle>,
     video_frame_seq: u64,
     audio_player: AudioPlayer,
     video_player: VideoPlayer,
+
+    // Manual update checker in Settings
+    checking_update: bool,
+    update_result: Option<Result<UpdateCheckResult, String>>,
 
     // GPU Texture cache for thumbnails
     textures: HashMap<String, TextureHandle>,
@@ -149,6 +157,13 @@ pub struct MediaVaultApp {
     toast: Option<ToastState>,
     applied_theme: String,
     chrome_synced_frames: u8,
+
+    // Smooth window open / minimize / maximize / restore transition state
+    launch_started: Instant,
+    last_maximized: Option<bool>,
+    last_minimized: Option<bool>,
+    last_screen_size: Vec2,
+    window_transition_at: Option<Instant>,
 }
 
 struct AnalyzeModalState {
@@ -214,6 +229,8 @@ impl MediaVaultApp {
                 video: 0,
                 audio: 0,
                 image: 0,
+                completed: 0,
+                failed: 0,
             },
             last_refresh: Instant::now() - Duration::from_secs(10),
             analyze_modal: None,
@@ -222,15 +239,23 @@ impl MediaVaultApp {
             delete_file_checked: false,
             viewer_open: false,
             viewer_loading: false,
+            viewer_expanded: false,
             viewer_content: None,
             viewer_texture: None,
             video_frame_seq: 0,
             audio_player: AudioPlayer::new(),
             video_player: VideoPlayer::new(),
+            checking_update: false,
+            update_result: None,
             textures: HashMap::new(),
             loading_tokens: HashSet::new(),
             toast: None,
             chrome_synced_frames: 0,
+            launch_started: Instant::now(),
+            last_maximized: None,
+            last_minimized: None,
+            last_screen_size: Vec2::ZERO,
+            window_transition_at: None,
         };
         app.refresh_jobs();
         app
@@ -351,6 +376,7 @@ impl MediaVaultApp {
         self.video_player.stop();
         self.viewer_texture = None;
         self.video_frame_seq = 0;
+        self.viewer_expanded = false;
         self.viewer_content = None;
         self.viewer_open = true;
         self.viewer_loading = true;
@@ -580,14 +606,97 @@ impl MediaVaultApp {
                     }
                     self.viewer_content = Some(content);
                 }
+                AsyncMsg::UpdateCheckDone(res) => {
+                    self.checking_update = false;
+                    self.update_result = Some(res);
+                }
+            }
+        }
+    }
+
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        if self.checking_update {
+            return;
+        }
+        self.checking_update = true;
+        self.update_result = None;
+        let tx = self.tx.clone();
+        let ctx_clone = ctx.clone();
+        self.rt.spawn(async move {
+            let res = check_latest_github_release(env!("CARGO_PKG_VERSION")).await;
+            let _ = tx.send(AsyncMsg::UpdateCheckDone(res));
+            ctx_clone.request_repaint();
+        });
+    }
+
+    fn handle_global_paste_and_drop(&mut self, ctx: &egui::Context) {
+        let modal_open = self.analyze_modal.is_some()
+            || self.viewer_open
+            || self.settings_open
+            || self.delete_target.is_some();
+        if modal_open || self.analyzing {
+            return;
+        }
+
+        // Global Ctrl+V anywhere when no text field is focused -> instant URL paste & analyze
+        let any_text_focused = ctx.memory(|m| m.focused().is_some());
+        if !any_text_focused {
+            let paste_triggered = ctx.input(|i| {
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Paste(_)))
+                    || (i.modifiers.command && i.key_pressed(egui::Key::V))
+            });
+            if paste_triggered {
+                if let Ok(mut cb) = arboard::Clipboard::new() {
+                    if let Ok(text) = cb.get_text() {
+                        let trimmed = text.trim();
+                        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                            self.url_input = trimmed.to_string();
+                            self.url_error = None;
+                            self.start_analyze(ctx);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Drag-and-drop .url shortcut file onto the app window
+        let dropped = ctx.input(|i| i.raw.dropped_files.clone());
+        for file in dropped {
+            if let Some(path) = file.path {
+                if path
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| e.eq_ignore_ascii_case("url"))
+                {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Some(url) = content.lines().find_map(|l| l.strip_prefix("URL=")) {
+                            let trimmed = url.trim();
+                            if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+                                self.url_input = trimmed.to_string();
+                                self.url_error = None;
+                                self.start_analyze(ctx);
+                                break;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 impl eframe::App for MediaVaultApp {
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        let p = Palette::for_mode(visuals.dark_mode);
+        egui::Rgba::from(p.bg).to_array()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_async(ctx);
+        self.handle_global_paste_and_drop(ctx);
 
         if self.applied_theme != self.prefs.theme {
             apply_modern_theme(ctx, &self.prefs.theme);
@@ -598,7 +707,25 @@ impl eframe::App for MediaVaultApp {
         let dark = ctx.style().visuals.dark_mode;
         let palette = Palette::for_mode(dark);
 
-        // Sync Windows 11 DWM titlebar color once window handle is active
+        // Detect window Maximize / Unmaximize / Restore-from-Minimize for silky GPU transition
+        let (vp_max, vp_min) = ctx.input(|i| (i.viewport().maximized, i.viewport().minimized));
+        let screen_sz = ctx.screen_rect().size();
+        let state_changed = (self.last_maximized.is_some() && self.last_maximized != vp_max)
+            || (self.last_minimized == Some(true) && vp_min == Some(false))
+            || (self.last_screen_size.x > 0.0
+                && ((screen_sz.x - self.last_screen_size.x).abs() > 72.0
+                    || (screen_sz.y - self.last_screen_size.y).abs() > 72.0));
+        if state_changed {
+            self.window_transition_at = Some(Instant::now());
+            self.chrome_synced_frames = 0;
+        }
+        self.last_maximized = vp_max;
+        self.last_minimized = vp_min;
+        if screen_sz.x > 0.0 && screen_sz.y > 0.0 {
+            self.last_screen_size = screen_sz;
+        }
+
+        // Sync Windows 11 DWM rounded corners, transitions, and titlebar color
         if self.chrome_synced_frames < 3 {
             sync_window_chrome(dark, &palette);
             self.chrome_synced_frames += 1;
@@ -739,7 +866,7 @@ impl eframe::App for MediaVaultApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("MediaVault v0.4.0 · 100% Native Rust + SQLite · Local & Private")
+                        RichText::new("MediaVault v0.5.0 · 100% Native Rust + SQLite · Local & Private")
                             .font(font_regular(11.5))
                             .color(palette.muted),
                     );
@@ -973,21 +1100,87 @@ impl eframe::App for MediaVaultApp {
 
                     ui.add_space(10.0);
 
-                    // Animated Sliding Pill Tab Bar!
-                    let tabs = [
-                        ("all", format!("All ({})", self.counts.all)),
-                        ("active", format!("Active ({})", self.counts.active)),
-                        ("video", format!("Video ({})", self.counts.video)),
-                        ("audio", format!("Audio ({})", self.counts.audio)),
-                        ("image", format!("Photos ({})", self.counts.image)),
-                    ];
-                    if let Some(new_tab) =
-                        animated_tab_bar(ui, "downloads_tabs", &tabs, &self.tab, &palette)
-                    {
-                        self.tab = new_tab;
-                        self.page = 0;
-                        self.refresh_jobs();
-                    }
+                    // Animated Sliding Pill Tab Bar + Bulk History Clear buttons
+                    ui.horizontal(|ui| {
+                        let tabs = [
+                            ("all", format!("All ({})", self.counts.all)),
+                            ("active", format!("Active ({})", self.counts.active)),
+                            ("video", format!("Video ({})", self.counts.video)),
+                            ("audio", format!("Audio ({})", self.counts.audio)),
+                            ("image", format!("Photos ({})", self.counts.image)),
+                        ];
+                        if let Some(new_tab) =
+                            animated_tab_bar(ui, "downloads_tabs", &tabs, &self.tab, &palette)
+                        {
+                            self.tab = new_tab;
+                            self.page = 0;
+                            self.refresh_jobs();
+                        }
+
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if self.counts.failed > 0 {
+                                let resp = anim_button(
+                                    ui,
+                                    "bulk_clear_failed",
+                                    "Clear Failed",
+                                    Some(Icon::ClearList),
+                                    BtnVariant::DangerGhost,
+                                    28.0,
+                                    None,
+                                    true,
+                                    false,
+                                    &palette,
+                                );
+                                if resp.clicked() {
+                                    match self.db.clear_failed_history() {
+                                        Ok(n) => {
+                                            self.page = 0;
+                                            self.refresh_jobs();
+                                            self.show_toast(
+                                                format!("Cleared {n} failed history item(s)."),
+                                                false,
+                                            );
+                                        }
+                                        Err(e) => self.show_toast(e.to_string(), true),
+                                    }
+                                }
+                                resp.on_hover_text("Remove failed/cancelled entries from history");
+                            }
+
+                            if self.counts.completed > 0 {
+                                let resp = anim_button(
+                                    ui,
+                                    "bulk_clear_completed",
+                                    "Clear Completed",
+                                    Some(Icon::ClearList),
+                                    BtnVariant::Ghost,
+                                    28.0,
+                                    None,
+                                    true,
+                                    false,
+                                    &palette,
+                                );
+                                if resp.clicked() {
+                                    match self.db.clear_completed_history() {
+                                        Ok(n) => {
+                                            self.page = 0;
+                                            self.refresh_jobs();
+                                            self.show_toast(
+                                                format!(
+                                                    "Cleared {n} completed entry(s) from history (files kept on disk)."
+                                                ),
+                                                false,
+                                            );
+                                        }
+                                        Err(e) => self.show_toast(e.to_string(), true),
+                                    }
+                                }
+                                resp.on_hover_text(
+                                    "Remove completed entries from history without deleting files on disk",
+                                );
+                            }
+                        });
+                    });
 
                     ui.add_space(12.0);
 
@@ -1163,10 +1356,57 @@ impl eframe::App for MediaVaultApp {
         self.render_settings_modal(ctx, &palette);
         self.render_delete_modal(ctx, &palette);
         self.render_toast(ctx, &palette);
+
+        // === SMOOTH WINDOW LAUNCH & MAXIMIZE/RESTORE/UNMINIMIZE GPU TRANSITION VEIL ===
+        self.render_window_transitions(ctx, &palette);
     }
 }
 
 impl MediaVaultApp {
+    fn render_window_transitions(&mut self, ctx: &egui::Context, palette: &Palette) {
+        let screen = ctx.screen_rect();
+
+        // 1. Smooth launch fade-in veil (0.34s ease-out cubic — eliminates abrupt pop on app open)
+        let launch_elapsed = self.launch_started.elapsed().as_secs_f32();
+        if launch_elapsed < 0.34 {
+            let t = ease_out_cubic((launch_elapsed / 0.34).clamp(0.0, 1.0));
+            let veil_a = ((1.0 - t) * 215.0) as u8;
+            let painter = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                Id::new("launch_veil"),
+            ));
+            painter.rect_filled(screen, CornerRadius::ZERO, with_alpha(palette.bg, veil_a));
+            ctx.request_repaint();
+        }
+
+        // 2. Smooth Maximize / Unmaximize / Restore-from-Minimize settle glow & veil (0.28s)
+        if let Some(started) = self.window_transition_at {
+            let elapsed = started.elapsed().as_secs_f32();
+            if elapsed < 0.28 {
+                let t = ease_out_cubic((elapsed / 0.28).clamp(0.0, 1.0));
+                let fade = 1.0 - t;
+                let painter = ctx.layer_painter(egui::LayerId::new(
+                    egui::Order::Tooltip,
+                    Id::new("window_morph_veil"),
+                ));
+                // Soft veil settle + subtle luminous indigo rim accent around new viewport bounds
+                painter.rect_filled(
+                    screen,
+                    CornerRadius::ZERO,
+                    with_alpha(palette.bg, (fade * 78.0) as u8),
+                );
+                painter.rect_stroke(
+                    screen.shrink(1.0),
+                    CornerRadius::same(8),
+                    Stroke::new(2.0 * fade + 0.5, with_alpha(palette.accent, (fade * 120.0) as u8)),
+                    StrokeKind::Inside,
+                );
+                ctx.request_repaint();
+            } else {
+                self.window_transition_at = None;
+            }
+        }
+    }
     fn render_job_card(
         &mut self,
         ui: &mut egui::Ui,
@@ -1912,10 +2152,14 @@ impl MediaVaultApp {
 
     fn render_viewer_modal(&mut self, ctx: &egui::Context, palette: &Palette) {
         let is_video_viewer = matches!(self.viewer_content, Some(ViewerContent::Video { .. }));
+        let is_audio_viewer = matches!(self.viewer_content, Some(ViewerContent::Audio { .. }));
         let mut video_seek_to: Option<f64> = None;
         let mut video_toggle_play = false;
         let mut video_set_volume: Option<f32> = None;
         let mut video_set_muted: Option<bool> = None;
+        let mut audio_seek_to: Option<f64> = None;
+        let mut audio_set_volume: Option<f32> = None;
+        let mut audio_set_muted: Option<bool> = None;
 
         // Upload newest decoded video frame directly to GPU texture in-place
         if self.viewer_open && is_video_viewer {
@@ -1940,10 +2184,20 @@ impl MediaVaultApp {
             None
         };
 
+        let mut open = self.viewer_open;
+        let mut delta_slide = 0isize;
+        let mut open_explorer_path: Option<String> = None;
+        let mut open_player_path: Option<String> = None;
+        let mut play_audio_path: Option<String> = None;
+        let mut toggle_audio = false;
+        let mut stop_audio = false;
+
         if self.viewer_open {
             if is_video_viewer {
                 if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
                     video_toggle_play = true;
+                } else if ctx.input(|i| i.key_pressed(egui::Key::F)) {
+                    self.viewer_expanded = !self.viewer_expanded;
                 } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
                     if let Some(s) = &video_snap {
                         video_seek_to = Some((s.position_secs - 5.0).max(0.0));
@@ -1962,6 +2216,22 @@ impl MediaVaultApp {
                         video_set_muted = Some(!s.muted);
                     }
                 }
+            } else if is_audio_viewer {
+                if ctx.input(|i| i.key_pressed(egui::Key::Space)) {
+                    if self.audio_player.is_active() {
+                        toggle_audio = true;
+                    } else if let Some(ViewerContent::Audio { path, .. }) = &self.viewer_content {
+                        play_audio_path = Some(path.clone());
+                    }
+                } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
+                    audio_seek_to = Some((self.audio_player.position_secs() - 5.0).max(0.0));
+                } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
+                    let dur = self.audio_player.duration_secs();
+                    let next = self.audio_player.position_secs() + 5.0;
+                    audio_seek_to = Some(if dur > 0.0 { next.min(dur) } else { next });
+                } else if ctx.input(|i| i.key_pressed(egui::Key::M)) {
+                    audio_set_muted = Some(!self.audio_player.muted());
+                }
             } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowLeft)) {
                 self.switch_album_slide(ctx, -1);
             } else if ctx.input(|i| i.key_pressed(egui::Key::ArrowRight)) {
@@ -1977,14 +2247,6 @@ impl MediaVaultApp {
             self.ensure_thumbnail(ctx, video_thumb_tok.as_deref());
         }
 
-        let mut open = self.viewer_open;
-        let mut delta_slide = 0isize;
-        let mut open_explorer_path: Option<String> = None;
-        let mut open_player_path: Option<String> = None;
-        let mut play_audio_path: Option<String> = None;
-        let mut toggle_audio = false;
-        let mut stop_audio = false;
-
         let (modal_title, modal_sub) = match &self.viewer_content {
             Some(ViewerContent::Image { title, meta, .. })
             | Some(ViewerContent::Album { title, meta, .. })
@@ -1998,11 +2260,20 @@ impl MediaVaultApp {
         let title_owned = modal_title.to_string();
         let sub_owned = modal_sub.map(String::from);
 
-        // Generous responsive cinema modal so both 16:9 landscape and 9:16 portrait videos shine!
+        // Generous responsive cinema modal — smoothly expands to fill the app window when toggled!
         let screen = ctx.screen_rect();
-        let modal_w = (screen.width() - 80.0).clamp(760.0, 960.0);
-        let modal_h = (screen.height() - 72.0).clamp(540.0, 670.0);
-        let stage_h = (modal_h - 210.0).clamp(320.0, 470.0);
+        let (modal_w, modal_h) = if self.viewer_expanded {
+            (
+                (screen.width() - 32.0).max(760.0),
+                (screen.height() - 32.0).max(540.0),
+            )
+        } else {
+            (
+                (screen.width() - 80.0).clamp(760.0, 960.0),
+                (screen.height() - 72.0).clamp(540.0, 670.0),
+            )
+        };
+        let stage_h = (modal_h - 210.0).clamp(320.0, 760.0);
 
         show_animated_modal(
             ctx,
@@ -2148,9 +2419,16 @@ impl MediaVaultApp {
                         });
                     }
                     Some(ViewerContent::Audio { path, .. }) => {
-                        let playing_this = self.audio_player.loaded_path() == Some(path.as_str())
+                        let playing_this = self.audio_player.loaded_path_str().as_deref()
+                            == Some(path.as_str())
                             && self.audio_player.is_active();
                         let is_playing_now = playing_this && !self.audio_player.is_paused();
+                        let duration = self.audio_player.duration_secs();
+                        let pos = if playing_this {
+                            self.audio_player.position_secs()
+                        } else {
+                            0.0
+                        };
 
                         Frame::new()
                             .fill(palette.input_bg)
@@ -2170,7 +2448,7 @@ impl MediaVaultApp {
                                     ui.add_space(4.0);
                                     ui.label(
                                         RichText::new(if is_playing_now {
-                                            "Playing locally in-app"
+                                            "Playing locally in-app · Space to pause · Left/Right to seek"
                                         } else if playing_this {
                                             "Paused"
                                         } else {
@@ -2182,7 +2460,22 @@ impl MediaVaultApp {
                                 });
                             });
 
-                        ui.add_space(16.0);
+                        // Interactive Audio Seek Scrubber + Hover Timestamp Tooltip
+                        if playing_this && duration > 0.0 {
+                            ui.add_space(12.0);
+                            if let Some(target) = render_timeline_scrubber(
+                                ui,
+                                ctx,
+                                "aud_scrub",
+                                pos,
+                                duration,
+                                palette,
+                            ) {
+                                audio_seek_to = Some(target);
+                            }
+                        }
+
+                        ui.add_space(12.0);
                         ui.horizontal(|ui| {
                             if !playing_this {
                                 if anim_button(
@@ -2240,22 +2533,68 @@ impl MediaVaultApp {
                                     stop_audio = true;
                                 }
                             }
+
+                            if duration > 0.0 {
+                                ui.label(
+                                    RichText::new(format!(
+                                        "{} / {}",
+                                        nice_duration(pos),
+                                        nice_duration(duration)
+                                    ))
+                                    .font(font_semibold(12.0))
+                                    .color(palette.text_secondary),
+                                );
+                            }
+
+                            // Volume & Mute controls
+                            let a_muted = self.audio_player.muted();
+                            let a_vol = self.audio_player.volume();
+                            let vol_ic = if a_muted || a_vol <= 0.01 {
+                                Icon::VolumeMute
+                            } else {
+                                Icon::Volume
+                            };
                             if anim_button(
                                 ui,
-                                "aud_folder",
-                                "Show in Folder",
-                                Some(Icon::Folder),
+                                "aud_mute_btn",
+                                "",
+                                Some(vol_ic),
                                 BtnVariant::Secondary,
-                                36.0,
-                                None,
+                                32.0,
+                                Some(32.0),
                                 true,
                                 false,
                                 palette,
                             )
                             .clicked()
                             {
-                                open_explorer_path = Some(path.clone());
+                                audio_set_muted = Some(!a_muted);
                             }
+                            if let Some(new_v) = render_volume_bar(ui, ctx, a_vol, a_muted, palette) {
+                                audio_set_volume = Some(new_v);
+                                if a_muted && new_v > 0.02 {
+                                    audio_set_muted = Some(false);
+                                }
+                            }
+
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if anim_button(
+                                    ui,
+                                    "aud_folder",
+                                    "Show in Folder",
+                                    Some(Icon::Folder),
+                                    BtnVariant::Secondary,
+                                    36.0,
+                                    None,
+                                    true,
+                                    false,
+                                    palette,
+                                )
+                                .clicked()
+                                {
+                                    open_explorer_path = Some(path.clone());
+                                }
+                            });
                         });
                     }
                     Some(ViewerContent::Video {
@@ -2281,7 +2620,9 @@ impl MediaVaultApp {
                         if stage_resp.hovered() {
                             ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
                         }
-                        if stage_resp.clicked() && snap.error.is_none() {
+                        if stage_resp.double_clicked() {
+                            self.viewer_expanded = !self.viewer_expanded;
+                        } else if stage_resp.clicked() && snap.error.is_none() {
                             video_toggle_play = true;
                         }
 
@@ -2380,56 +2721,17 @@ impl MediaVaultApp {
                                 );
                             });
                         } else {
-                            // Interactive Seek Timeline Scrubber
+                            // Interactive Seek Timeline Scrubber with Hover Timestamp Tooltip
                             ui.add_space(10.0);
-                            let scrub_w = ui.available_width();
-                            let (scrub_rect, scrub_resp) =
-                                ui.allocate_exact_size(Vec2::new(scrub_w, 16.0), Sense::click_and_drag());
-                            if scrub_resp.hovered() || scrub_resp.dragged() {
-                                ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
-                            }
-                            let frac = if duration > 0.0 {
-                                (snap.position_secs / duration).clamp(0.0, 1.0) as f32
-                            } else {
-                                0.0
-                            };
-                            let track_h = 5.0;
-                            let track_rect = Rect::from_center_size(
-                                scrub_rect.center(),
-                                Vec2::new(scrub_w, track_h),
-                            );
-                            ui.painter()
-                                .rect_filled(track_rect, CornerRadius::same(3), palette.inset);
-                            let fill_w = (scrub_w * frac).max(4.0);
-                            let fill_rect =
-                                Rect::from_min_size(track_rect.min, Vec2::new(fill_w, track_h));
-                            ui.painter()
-                                .rect_filled(fill_rect, CornerRadius::same(3), palette.accent);
-
-                            let thumb_hov = ctx.animate_bool_with_time(
-                                Id::new("vid_scrub_hov"),
-                                scrub_resp.hovered() || scrub_resp.dragged(),
-                                0.12,
-                            );
-                            let thumb_x = track_rect.left() + scrub_w * frac;
-                            let thumb_r = 5.5 + thumb_hov * 2.5;
-                            ui.painter().circle_filled(
-                                Pos2::new(thumb_x, track_rect.center().y),
-                                thumb_r + 2.5,
-                                with_alpha(palette.accent, (thumb_hov * 75.0) as u8),
-                            );
-                            ui.painter().circle_filled(
-                                Pos2::new(thumb_x, track_rect.center().y),
-                                thumb_r,
-                                Color32::WHITE,
-                            );
-
-                            if (scrub_resp.clicked() || scrub_resp.dragged()) && duration > 0.0 {
-                                if let Some(ptr) = scrub_resp.interact_pointer_pos() {
-                                    let next_frac =
-                                        ((ptr.x - track_rect.left()) / scrub_w).clamp(0.0, 1.0);
-                                    video_seek_to = Some(next_frac as f64 * duration);
-                                }
+                            if let Some(target) = render_timeline_scrubber(
+                                ui,
+                                ctx,
+                                "vid_scrub",
+                                snap.position_secs,
+                                duration,
+                                palette,
+                            ) {
+                                video_seek_to = Some(target);
                             }
                         }
 
@@ -2548,6 +2850,32 @@ impl MediaVaultApp {
                             }
 
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                let exp_ic = if self.viewer_expanded {
+                                    Icon::Minimize
+                                } else {
+                                    Icon::Maximize
+                                };
+                                let exp_resp = anim_button(
+                                    ui,
+                                    "vid_expand",
+                                    "",
+                                    Some(exp_ic),
+                                    BtnVariant::Secondary,
+                                    34.0,
+                                    Some(34.0),
+                                    true,
+                                    false,
+                                    palette,
+                                );
+                                if exp_resp.clicked() {
+                                    self.viewer_expanded = !self.viewer_expanded;
+                                }
+                                exp_resp.on_hover_text(if self.viewer_expanded {
+                                    "Exit expanded cinema stage (F)"
+                                } else {
+                                    "Expand cinema stage (F)"
+                                });
+
                                 if anim_button(
                                     ui,
                                     "vid_folder",
@@ -2607,6 +2935,15 @@ impl MediaVaultApp {
         if let Some(m) = video_set_muted {
             self.video_player.set_muted(m);
         }
+        if let Some(t) = audio_seek_to {
+            self.audio_player.seek(t);
+        }
+        if let Some(v) = audio_set_volume {
+            self.audio_player.set_volume(v);
+        }
+        if let Some(m) = audio_set_muted {
+            self.audio_player.set_muted(m);
+        }
         if delta_slide != 0 {
             self.switch_album_slide(ctx, delta_slide);
         }
@@ -2644,13 +2981,15 @@ impl MediaVaultApp {
     fn render_settings_modal(&mut self, ctx: &egui::Context, palette: &Palette) {
         let mut open = self.settings_open;
         let mut save_clicked = false;
+        let mut trigger_update_check = false;
+        let mut open_release_url: Option<String> = None;
 
         show_animated_modal(
             ctx,
             "modal_settings",
             "Settings & Engine",
             Some("Configure default download preferences and inspect the native Rust engine"),
-            Vec2::new(710.0, 395.0),
+            Vec2::new(720.0, 445.0),
             palette,
             &mut open,
             |ui| {
@@ -2830,11 +3169,79 @@ impl MediaVaultApp {
                                 .font(font_regular(11.0))
                                 .color(palette.muted),
                         );
+
+                        ui.add_space(12.0);
+                        ui.horizontal(|ui| {
+                            if anim_button(
+                                ui,
+                                "check_updates_btn",
+                                if self.checking_update {
+                                    "Checking..."
+                                } else {
+                                    "Check for Updates"
+                                },
+                                Some(Icon::Retry),
+                                BtnVariant::Secondary,
+                                32.0,
+                                None,
+                                !self.checking_update,
+                                self.checking_update,
+                                palette,
+                            )
+                            .clicked()
+                            {
+                                trigger_update_check = true;
+                            }
+
+                            if let Some(Ok(info)) = &self.update_result {
+                                if info.update_available {
+                                    if anim_button(
+                                        ui,
+                                        "open_release_btn",
+                                        &format!("Download {}", info.latest_tag),
+                                        Some(Icon::External),
+                                        BtnVariant::AccentGhost,
+                                        32.0,
+                                        None,
+                                        true,
+                                        false,
+                                        palette,
+                                    )
+                                    .clicked()
+                                    {
+                                        open_release_url = Some(info.release_url.clone());
+                                    }
+                                } else {
+                                    status_pill(
+                                        ui,
+                                        &format!("Up to date ({})", info.latest_tag),
+                                        palette.good,
+                                        palette.good_soft,
+                                        Some(Icon::Check),
+                                        false,
+                                    );
+                                }
+                            } else if let Some(Err(err)) = &self.update_result {
+                                ui.label(
+                                    RichText::new(err)
+                                        .font(font_regular(11.5))
+                                        .color(palette.error),
+                                );
+                            }
+                        });
                     });
                 });
             },
         );
 
+        if trigger_update_check {
+            self.start_update_check(ctx);
+        }
+        if let Some(url) = open_release_url {
+            if let Err(e) = open_release_page_in_browser(&url) {
+                self.show_toast(e.to_string(), true);
+            }
+        }
         if save_clicked {
             match self.db.save_preferences(&self.settings_draft) {
                 Ok(saved) => {
@@ -3133,6 +3540,125 @@ fn nice_duration(sec: f64) -> String {
     } else {
         format!("{m}:{r:02}")
     }
+}
+
+/// Shared interactive timeline scrubber with smooth hover thumb and floating timestamp tooltip.
+fn render_timeline_scrubber(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    id_salt: &str,
+    position_secs: f64,
+    duration_secs: f64,
+    palette: &Palette,
+) -> Option<f64> {
+    let scrub_w = ui.available_width();
+    let (scrub_rect, scrub_resp) =
+        ui.allocate_exact_size(Vec2::new(scrub_w, 18.0), Sense::click_and_drag());
+    let hovering = scrub_resp.hovered() || scrub_resp.dragged();
+    if hovering {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+
+    let frac = if duration_secs > 0.0 {
+        (position_secs / duration_secs).clamp(0.0, 1.0) as f32
+    } else {
+        0.0
+    };
+    let track_h = 5.0;
+    let track_rect = Rect::from_center_size(scrub_rect.center(), Vec2::new(scrub_w, track_h));
+    ui.painter()
+        .rect_filled(track_rect, CornerRadius::same(3), palette.inset);
+    let fill_w = (scrub_w * frac).max(4.0);
+    let fill_rect = Rect::from_min_size(track_rect.min, Vec2::new(fill_w, track_h));
+    ui.painter()
+        .rect_filled(fill_rect, CornerRadius::same(3), palette.accent);
+
+    let thumb_hov = ctx.animate_bool_with_time(Id::new(id_salt).with("hov"), hovering, 0.12);
+    let thumb_x = track_rect.left() + scrub_w * frac;
+    let thumb_r = 5.5 + thumb_hov * 2.5;
+    ui.painter().circle_filled(
+        Pos2::new(thumb_x, track_rect.center().y),
+        thumb_r + 2.5,
+        with_alpha(palette.accent, (thumb_hov * 75.0) as u8),
+    );
+    ui.painter().circle_filled(
+        Pos2::new(thumb_x, track_rect.center().y),
+        thumb_r,
+        Color32::WHITE,
+    );
+
+    // Floating hover timestamp tooltip tracking cursor smoothly along the timeline
+    if hovering && duration_secs > 0.0 {
+        if let Some(ptr) = scrub_resp.hover_pos().or(scrub_resp.interact_pointer_pos()) {
+            let h_frac = ((ptr.x - track_rect.left()) / scrub_w).clamp(0.0, 1.0);
+            let h_time = nice_duration(h_frac as f64 * duration_secs);
+            let tip_x = (track_rect.left() + scrub_w * h_frac)
+                .clamp(track_rect.left() + 24.0, track_rect.right() - 24.0);
+            let tip_rect = Rect::from_center_size(
+                Pos2::new(tip_x, track_rect.top() - 16.0),
+                Vec2::new(48.0, 20.0),
+            );
+            let layer = ctx.layer_painter(egui::LayerId::new(
+                egui::Order::Tooltip,
+                Id::new(id_salt).with("tip"),
+            ));
+            layer.rect_filled(tip_rect, CornerRadius::same(5), palette.surface_elevated);
+            layer.rect_stroke(
+                tip_rect,
+                CornerRadius::same(5),
+                Stroke::new(1.0, palette.accent_border),
+                StrokeKind::Inside,
+            );
+            layer.text(
+                tip_rect.center(),
+                Align2::CENTER_CENTER,
+                h_time,
+                font_semibold(11.0),
+                palette.text,
+            );
+        }
+    }
+
+    if (scrub_resp.clicked() || scrub_resp.dragged()) && duration_secs > 0.0 {
+        if let Some(ptr) = scrub_resp.interact_pointer_pos() {
+            let next_frac = ((ptr.x - track_rect.left()) / scrub_w).clamp(0.0, 1.0);
+            return Some(next_frac as f64 * duration_secs);
+        }
+    }
+    None
+}
+
+fn render_volume_bar(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    volume: f32,
+    muted: bool,
+    palette: &Palette,
+) -> Option<f32> {
+    let vol_w = 72.0;
+    let (vol_rect, vol_resp) =
+        ui.allocate_exact_size(Vec2::new(vol_w, 16.0), Sense::click_and_drag());
+    if vol_resp.hovered() || vol_resp.dragged() {
+        ctx.set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    let eff_vol = if muted { 0.0 } else { volume };
+    let vt = Rect::from_center_size(vol_rect.center(), Vec2::new(vol_w, 4.0));
+    ui.painter()
+        .rect_filled(vt, CornerRadius::same(2), palette.inset);
+    let vf = Rect::from_min_size(vt.min, Vec2::new((vol_w * eff_vol).max(2.0), 4.0));
+    ui.painter()
+        .rect_filled(vf, CornerRadius::same(2), palette.accent);
+    ui.painter().circle_filled(
+        Pos2::new(vt.left() + vol_w * eff_vol, vt.center().y),
+        4.5,
+        Color32::WHITE,
+    );
+    if vol_resp.clicked() || vol_resp.dragged() {
+        if let Some(ptr) = vol_resp.interact_pointer_pos() {
+            return Some(((ptr.x - vt.left()) / vol_w).clamp(0.0, 1.0));
+        }
+    }
+    None
 }
 
 fn fit_aspect(src: Vec2, max: Vec2) -> Vec2 {

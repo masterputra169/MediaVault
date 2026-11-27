@@ -97,6 +97,7 @@ pub struct ImageItem {
 #[derive(Debug, Clone)]
 pub struct ExtractedPhotoSet {
     pub title: Option<String>,
+    #[allow(dead_code)]
     pub uploader: Option<String>,
     #[allow(dead_code)]
     pub media_id: Option<String>,
@@ -214,6 +215,7 @@ pub fn decode_preview_rgba(raw: &[u8], max_dim: u32) -> Result<PreviewRgba, AppE
     })
 }
 
+#[allow(dead_code)]
 pub fn looks_like_photo_url(url_str: &str, platform: &str) -> bool {
     let Ok(parsed) = Url::parse(url_str) else {
         return false;
@@ -847,7 +849,75 @@ pub struct FacebookMediaResult {
     pub duration_seconds: Option<f64>,
     pub thumbnail_url: Option<String>,
     pub video_variants: Vec<DirectVideoVariant>,
+    pub dash_videos: Vec<DirectVideoVariant>,
+    pub dash_audio_url: Option<String>,
     pub images: Vec<ImageItem>,
+}
+
+static FB_DASH_REP_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<Representation\b([^>]*)>(.*?)</Representation>").unwrap());
+static FB_DASH_BASEURL_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?is)<BaseURL[^>]*>([^<]+)</BaseURL>").unwrap());
+static FB_DASH_HEIGHT_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\bheight=["'](\d{3,4})["']"#).unwrap());
+static FB_DASH_BW_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\bbandwidth=["'](\d+)["']"#).unwrap());
+static FB_DASH_MIME_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\bmimeType=["']([^"']+)["']"#).unwrap());
+static FB_DASH_CODECS_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?i)\bcodecs=["']([^"']+)["']"#).unwrap());
+
+/// Parses Facebook's MPD/DASH XML manifest for high-res adaptive H.264 (up to 1080p+) + AAC audio.
+fn parse_facebook_dash_xml(
+    xml: &str,
+    dash_videos: &mut Vec<DirectVideoVariant>,
+    dash_audio: &mut Option<(u64, String)>,
+) {
+    for cap in FB_DASH_REP_RE.captures_iter(xml) {
+        let attrs = &cap[1];
+        let body = &cap[2];
+        let Some(url_cap) = FB_DASH_BASEURL_RE.captures(body) else {
+            continue;
+        };
+        let raw_url = unescape_html_entities(url_cap[1].trim());
+        if !is_meta_cdn_video_url(&raw_url) {
+            continue;
+        }
+        let mime = FB_DASH_MIME_RE
+            .captures(attrs)
+            .map(|c| c[1].to_ascii_lowercase())
+            .unwrap_or_default();
+        let codecs = FB_DASH_CODECS_RE
+            .captures(attrs)
+            .map(|c| c[1].to_ascii_lowercase())
+            .unwrap_or_default();
+        let bw = FB_DASH_BW_RE
+            .captures(attrs)
+            .and_then(|c| c[1].parse::<u64>().ok())
+            .unwrap_or(0);
+
+        if mime.contains("audio/mp4") || codecs.contains("mp4a") {
+            let replace = dash_audio.as_ref().map(|(old_bw, _)| bw >= *old_bw).unwrap_or(true);
+            if replace {
+                *dash_audio = Some((bw, raw_url));
+            }
+        } else if (mime.contains("video/mp4") || codecs.contains("avc1"))
+            && !codecs.contains("vp9")
+            && !codecs.contains("av01")
+        {
+            let h = FB_DASH_HEIGHT_RE
+                .captures(attrs)
+                .and_then(|c| c[1].parse::<u32>().ok())
+                .unwrap_or_else(|| fb_video_height_from_url(&raw_url, 720));
+            if (144..=2160).contains(&h) {
+                dash_videos.push(DirectVideoVariant {
+                    url: raw_url,
+                    height: h,
+                    bitrate: bw,
+                });
+            }
+        }
+    }
 }
 
 static HTML_NUM_ENTITY_RE: Lazy<Regex> =
@@ -931,6 +1001,8 @@ fn fb_image_is_small_preview(url_str: &str) -> bool {
 fn fb_walk_relay(
     val: &Value,
     videos: &mut Vec<DirectVideoVariant>,
+    dash_videos: &mut Vec<DirectVideoVariant>,
+    dash_audio: &mut Option<(u64, String)>,
     curr_images: &mut Vec<(String, Option<u32>, Option<u32>)>,
     album_images: &mut Vec<(String, Option<u32>, Option<u32>)>,
     post_images: &mut Vec<(String, Option<u32>, Option<u32>)>,
@@ -990,6 +1062,19 @@ fn fb_walk_relay(
                                 .and_then(Value::as_str)
                                 .map(String::from);
                         }
+                    }
+                }
+            }
+
+            // DASH XML manifest (often carries 1080p adaptive H.264 + AAC audio)
+            for dash_key in [
+                "dash_manifest",
+                "playable_dash_manifest",
+                "dash_manifest_xml_string",
+            ] {
+                if let Some(xml) = map.get(dash_key).and_then(Value::as_str) {
+                    if xml.contains("<Representation") {
+                        parse_facebook_dash_xml(xml, dash_videos, dash_audio);
                     }
                 }
             }
@@ -1086,6 +1171,8 @@ fn fb_walk_relay(
                 fb_walk_relay(
                     v,
                     videos,
+                    dash_videos,
+                    dash_audio,
                     curr_images,
                     album_images,
                     post_images,
@@ -1102,6 +1189,8 @@ fn fb_walk_relay(
                 fb_walk_relay(
                     v,
                     videos,
+                    dash_videos,
+                    dash_audio,
                     curr_images,
                     album_images,
                     post_images,
@@ -1119,6 +1208,8 @@ fn fb_walk_relay(
 
 pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaResult> {
     let mut raw_videos = Vec::new();
+    let mut raw_dash_videos = Vec::new();
+    let mut dash_audio: Option<(u64, String)> = None;
     let mut curr_images = Vec::new();
     let mut album_images = Vec::new();
     let mut post_images = Vec::new();
@@ -1133,6 +1224,7 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         if !s.contains("browser_native_")
             && !s.contains("playable_url")
             && !s.contains("progressive_url")
+            && !s.contains("dash_manifest")
             && !s.contains("hd_src")
             && !s.contains("sd_src")
             && !s.contains("currMedia")
@@ -1148,6 +1240,8 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         fb_walk_relay(
             &json,
             &mut raw_videos,
+            &mut raw_dash_videos,
+            &mut dash_audio,
             &mut curr_images,
             &mut album_images,
             &mut post_images,
@@ -1167,6 +1261,18 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         .collect();
     video_variants.sort_by(|a, b| b.height.cmp(&a.height));
 
+    let dash_audio_url = dash_audio.map(|(_, u)| u);
+    let mut seen_dv = HashSet::new();
+    let mut dash_videos: Vec<DirectVideoVariant> = if dash_audio_url.is_some() {
+        raw_dash_videos
+            .into_iter()
+            .filter(|v| seen_dv.insert(v.url.clone()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    dash_videos.sort_by(|a, b| b.height.cmp(&a.height).then_with(|| b.bitrate.cmp(&a.bitrate)));
+
     // Extract OG metadata
     let og_title = extract_meta_tag(html, &OG_TITLE_1, &OG_TITLE_2);
     let og_desc = extract_meta_tag(html, &OG_DESC_1, &OG_DESC_2);
@@ -1179,7 +1285,7 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
 
     // Choose best non-duplicate photos (skip when this is a pure video post)
     let mut chosen_raw: Vec<(String, Option<u32>, Option<u32>)> = Vec::new();
-    if video_variants.is_empty() {
+    if video_variants.is_empty() && dash_videos.is_empty() {
         let mut by_key: HashMap<String, (usize, String, Option<u32>, Option<u32>, bool)> =
             HashMap::new();
         let mut order = 0usize;
@@ -1237,7 +1343,7 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
     }
 
     let images = normalize_items(chosen_raw);
-    if video_variants.is_empty() && images.is_empty() {
+    if video_variants.is_empty() && dash_videos.is_empty() && images.is_empty() {
         return None;
     }
 
@@ -1250,7 +1356,7 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         .or(og_desc)
         .or(cleaned_og_title.clone())
         .or_else(|| {
-            Some(if !video_variants.is_empty() {
+            Some(if !video_variants.is_empty() || !dash_videos.is_empty() {
                 "Facebook Video".into()
             } else {
                 "Facebook Photo".into()
@@ -1281,6 +1387,8 @@ pub fn parse_facebook_html(html: &str, url_str: &str) -> Option<FacebookMediaRes
         duration_seconds: duration_ms.map(|ms| ms / 1000.0),
         thumbnail_url,
         video_variants,
+        dash_videos,
+        dash_audio_url,
         images,
     })
 }
@@ -1601,6 +1709,7 @@ pub struct TwitterSyndicationResult {
     pub thumbnail_url: Option<String>,
     pub video_variants: Vec<DirectVideoVariant>,
     pub images: Vec<ImageItem>,
+    #[allow(dead_code)]
     pub quoted_tweet_url: Option<String>,
 }
 
@@ -2318,6 +2427,7 @@ pub async fn extract_images(url_str: &str, platform: &str) -> Option<ExtractedPh
     }
 }
 
+#[allow(dead_code)]
 pub fn encode_preview_jpeg(raw: &[u8]) -> Result<Vec<u8>, AppError> {
     let img = decode_safe_image(raw)?;
     let resized = img.thumbnail(720, 720);
@@ -2470,6 +2580,69 @@ where
             .map_err(|_| AppError::new("INTERNAL_ERROR"))??;
     std::fs::write(dest_file, &encoded).map_err(|_| AppError::new("STORAGE_UNAVAILABLE"))?;
     Ok(encoded.len() as i64)
+}
+
+#[derive(Debug, Clone)]
+pub struct UpdateCheckResult {
+    pub latest_tag: String,
+    pub release_url: String,
+    pub update_available: bool,
+}
+
+fn parse_semver_tuple(tag: &str) -> (u32, u32, u32) {
+    let clean = tag.trim().trim_start_matches(['v', 'V']);
+    let mut parts = clean.split('.').map(|s| {
+        s.chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect::<String>()
+            .parse::<u32>()
+            .unwrap_or(0)
+    });
+    (
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+        parts.next().unwrap_or(0),
+    )
+}
+
+/// Manual opt-in update check against GitHub's official Releases API (never auto-executes anything).
+pub async fn check_latest_github_release(current_version: &str) -> Result<UpdateCheckResult, String> {
+    let api_url = "https://api.github.com/repos/masterputra169/MediaVault/releases/latest";
+    ensure_public_host(api_url)
+        .await
+        .map_err(|_| "Could not verify GitHub endpoint.".to_string())?;
+    let resp = SHARED_HTTP
+        .get(api_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("User-Agent", format!("MediaVault/{current_version}"))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|_| "Could not reach GitHub Releases. Check your internet connection.".to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("GitHub returned HTTP {}.", resp.status().as_u16()));
+    }
+    let json: Value = resp
+        .json()
+        .await
+        .map_err(|_| "Invalid release response from GitHub.".to_string())?;
+    let tag = json
+        .get("tag_name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Latest release tag was missing.".to_string())?
+        .to_string();
+    let html_url = json
+        .get("html_url")
+        .and_then(Value::as_str)
+        .filter(|u| u.starts_with("https://github.com/masterputra169/MediaVault/releases/"))
+        .unwrap_or("https://github.com/masterputra169/MediaVault/releases/latest")
+        .to_string();
+    let update_available = parse_semver_tuple(&tag) > parse_semver_tuple(current_version);
+    Ok(UpdateCheckResult {
+        latest_tag: tag,
+        release_url: html_url,
+        update_available,
+    })
 }
 
 #[cfg(test)]
@@ -2627,6 +2800,16 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.images.len(), 1);
+
+        // Facebook 1080p DASH XML manifest with adaptive video + AAC audio
+        let dash_xml = r#"<MPD><Period><AdaptationSet><Representation mimeType="video/mp4" codecs="avc1.640028" height="1080" bandwidth="3200000"><BaseURL>https://video.xx.fbcdn.net/v/1080p.mp4?a=1&amp;b=2</BaseURL></Representation><Representation mimeType="audio/mp4" codecs="mp4a.40.2" bandwidth="128000"><BaseURL>https://video.xx.fbcdn.net/v/audio.m4a?a=1&amp;b=2</BaseURL></Representation></AdaptationSet></Period></MPD>"#;
+        let dash_json = serde_json::json!({ "dash_manifest": dash_xml }).to_string();
+        let dash_html = format!(r#"<script type="application/json">{dash_json}</script>"#);
+        let parsed_dash = parse_facebook_html(&dash_html, "https://www.facebook.com/watch/?v=123").unwrap();
+        assert_eq!(parsed_dash.dash_videos.len(), 1);
+        assert_eq!(parsed_dash.dash_videos[0].height, 1080);
+        assert!(parsed_dash.dash_audio_url.as_deref().unwrap().contains("audio.m4a"));
+        assert!(parse_semver_tuple("v0.5.0") > parse_semver_tuple("0.4.0"));
         assert_eq!(p.images[0].width, Some(1280));
         assert_eq!(p.uploader.as_deref(), Some("NASA"));
 

@@ -25,6 +25,7 @@ pub struct Mp4ProbeInfo {
     pub width: Option<u32>,
     pub height: Option<u32>,
     pub video_codec: Option<String>,
+    #[allow(dead_code)]
     pub audio_codec: Option<String>,
     #[allow(dead_code)]
     pub file_size_bytes: u64,

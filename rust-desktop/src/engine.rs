@@ -1,7 +1,7 @@
 //! 100% Pure-Rust Download, Media Analysis, and Processing Engine.
 //! Zero yt-dlp, zero FFmpeg, zero ffprobe, zero gallery-dl, zero Node.js!
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -54,6 +54,7 @@ struct CachedAnalysis {
     meta: MediaMetadata,
     resolved_url: String,
     direct_videos: Vec<DirectVideoVariant>,
+    adaptive_video_urls: HashSet<String>,
     direct_audio_url: Option<String>,
     stream_ua: Option<String>,
     stream_cookie: Option<String>,
@@ -290,6 +291,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: yt.video_variants.iter().map(|v| v.url.clone()).collect(),
                     direct_videos: yt.video_variants,
                     direct_audio_url: yt.audio_url,
                     stream_ua: Some(yt.client_ua),
@@ -332,6 +334,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: HashSet::new(),
                     direct_videos: syn.video_variants,
                     direct_audio_url: None,
                     stream_ua: None,
@@ -369,6 +372,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: HashSet::new(),
                     direct_videos: ig.video_variants,
                     direct_audio_url: None,
                     stream_ua: None,
@@ -406,6 +410,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: HashSet::new(),
                     direct_videos: th.video_variants,
                     direct_audio_url: None,
                     stream_ua: None,
@@ -416,7 +421,23 @@ impl AppEngine {
                 let fb = extractors::fetch_facebook_media(resolved_url)
                     .await
                     .ok_or_else(|| AppError::new("UNAVAILABLE_MEDIA"))?;
-                let has_video = !fb.video_variants.is_empty();
+                let mut combined_videos = fb.video_variants;
+                let mut adaptive_urls = HashSet::new();
+                let mut seen_heights: HashSet<u32> = combined_videos.iter().map(|v| v.height).collect();
+                if fb.dash_audio_url.is_some() {
+                    for dv in fb.dash_videos {
+                        // Prefer adaptive DASH when it brings a higher or missing resolution (e.g. 1080p)
+                        if !seen_heights.contains(&dv.height) || dv.height >= 1080 {
+                            seen_heights.insert(dv.height);
+                            adaptive_urls.insert(dv.url.clone());
+                            combined_videos.push(dv);
+                        }
+                    }
+                }
+                combined_videos.sort_by(|a, b| {
+                    b.height.cmp(&a.height).then_with(|| b.bitrate.cmp(&a.bitrate))
+                });
+                let has_video = !combined_videos.is_empty();
                 let meta = MediaMetadata {
                     url: original_url.to_string(),
                     platform: "facebook".into(),
@@ -427,8 +448,8 @@ impl AppEngine {
                     preview_token: None,
                     media_id: fb.media_id,
                     media_type: Some(if has_video { "video" } else { "image" }.into()),
-                    format_count: fb.video_variants.len() + fb.images.len(),
-                    available_qualities: build_quality_list(&fb.video_variants),
+                    format_count: combined_videos.len() + fb.images.len(),
+                    available_qualities: build_quality_list(&combined_videos),
                     available_audio_formats: if has_video {
                         vec!["m4a".into(), "wav".into()]
                     } else {
@@ -443,8 +464,9 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
-                    direct_videos: fb.video_variants,
-                    direct_audio_url: None,
+                    adaptive_video_urls: adaptive_urls,
+                    direct_videos: combined_videos,
+                    direct_audio_url: fb.dash_audio_url,
                     stream_ua: None,
                     stream_cookie: None,
                 })
@@ -480,6 +502,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: HashSet::new(),
                     direct_videos: pin.video_variants,
                     direct_audio_url: None,
                     stream_ua: None,
@@ -515,6 +538,7 @@ impl AppEngine {
                 Ok(CachedAnalysis {
                     meta,
                     resolved_url: resolved_url.to_string(),
+                    adaptive_video_urls: HashSet::new(),
                     direct_videos: tt.video_variants,
                     direct_audio_url: None,
                     stream_ua: None,
@@ -1150,7 +1174,10 @@ impl AppEngine {
         )
         .ok_or_else(|| AppError::new("FORMAT_UNAVAILABLE"))?;
 
-        let final_stage = if let Some(aud_url) = analysis.direct_audio_url.as_deref() {
+        let needs_adaptive_mux = analysis.direct_audio_url.is_some()
+            && (job.platform == "youtube" || analysis.adaptive_video_urls.contains(&chosen.url));
+        let final_stage = if needs_adaptive_mux {
+            let aud_url = analysis.direct_audio_url.as_deref().unwrap();
             // Adaptive DASH stream (e.g. YouTube 1080p/720p H.264 + AAC): download video & audio then mux in pure Rust!
             let raw_v = stage_dir.join("video_only.mp4");
             let raw_a = stage_dir.join("audio_only.m4a");
@@ -1337,6 +1364,24 @@ pub fn open_media_in_default_player(path_str: &str) -> Result<(), AppError> {
         // Launching explorer.exe with a verified local media file path opens it in Windows default media player safely without cmd.exe.
         std::process::Command::new(windows_explorer_exe())
             .arg(&clean)
+            .spawn()
+            .map_err(|_| AppError::new("INTERNAL_ERROR"))?;
+    }
+    Ok(())
+}
+
+/// Safely opens ONLY MediaVault's official GitHub Releases URL in the default browser (never auto-executes).
+pub fn open_release_page_in_browser(url: &str) -> Result<(), AppError> {
+    if !url.starts_with("https://github.com/masterputra169/MediaVault/releases")
+        || url.len() > 256
+        || url.chars().any(|c| c.is_whitespace() || c.is_control() || c == '"')
+    {
+        return Err(AppError::new("FORBIDDEN"));
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new(windows_explorer_exe())
+            .arg(url)
             .spawn()
             .map_err(|_| AppError::new("INTERNAL_ERROR"))?;
     }

@@ -16,10 +16,13 @@ mod win_dwm {
     use egui::Color32;
     use std::ffi::c_void;
 
+    const DWMWA_TRANSITIONS_FORCEDISABLED: u32 = 3;
     const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+    const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
     const DWMWA_BORDER_COLOR: u32 = 34;
     const DWMWA_CAPTION_COLOR: u32 = 35;
     const DWMWA_TEXT_COLOR: u32 = 36;
+    const DWMWCP_ROUND: u32 = 2;
 
     #[link(name = "dwmapi")]
     extern "system" {
@@ -52,10 +55,24 @@ mod win_dwm {
                 return;
             }
             let dark_val: u32 = if dark { 1 } else { 0 };
+            let transitions_disabled: u32 = 0; // Ensure native Windows 11 DWM open/min/max animations stay enabled
+            let corner_pref: u32 = DWMWCP_ROUND;
             let cap_val = colorref(caption);
             let txt_val = colorref(text);
             let brd_val = colorref(border);
 
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_TRANSITIONS_FORCEDISABLED,
+                (&transitions_disabled as *const u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+            );
+            let _ = DwmSetWindowAttribute(
+                hwnd,
+                DWMWA_WINDOW_CORNER_PREFERENCE,
+                (&corner_pref as *const u32).cast(),
+                std::mem::size_of::<u32>() as u32,
+            );
             let _ = DwmSetWindowAttribute(
                 hwnd,
                 DWMWA_USE_IMMERSIVE_DARK_MODE,
@@ -414,6 +431,9 @@ pub enum Icon {
     External,
     Volume,
     VolumeMute,
+    Maximize,
+    Minimize,
+    ClearList,
 }
 
 pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
@@ -806,6 +826,63 @@ pub fn draw_icon(painter: &Painter, rect: Rect, icon: Icon, color: Color32) {
             let y1 = c.y + s * 0.26;
             painter.line_segment([Pos2::new(x0, y0), Pos2::new(x1, y1)], stroke);
             painter.line_segment([Pos2::new(x1, y0), Pos2::new(x0, y1)], stroke);
+        }
+        Icon::Maximize => {
+            // Top-right corner expand arrow + bottom-left corner expand arrow
+            painter.add(Shape::line(
+                vec![
+                    Pos2::new(c.x + s * 0.14, c.y - s * 0.66),
+                    Pos2::new(c.x + s * 0.66, c.y - s * 0.66),
+                    Pos2::new(c.x + s * 0.66, c.y - s * 0.14),
+                ],
+                stroke,
+            ));
+            painter.line_segment(
+                [Pos2::new(c.x + s * 0.16, c.y - s * 0.16), Pos2::new(c.x + s * 0.64, c.y - s * 0.64)],
+                stroke,
+            );
+            painter.add(Shape::line(
+                vec![
+                    Pos2::new(c.x - s * 0.66, c.y + s * 0.14),
+                    Pos2::new(c.x - s * 0.66, c.y + s * 0.66),
+                    Pos2::new(c.x - s * 0.14, c.y + s * 0.66),
+                ],
+                stroke,
+            ));
+            painter.line_segment(
+                [Pos2::new(c.x - s * 0.16, c.y + s * 0.16), Pos2::new(c.x - s * 0.64, c.y + s * 0.64)],
+                stroke,
+            );
+        }
+        Icon::Minimize => {
+            // Inward collapse corners
+            painter.add(Shape::line(
+                vec![
+                    Pos2::new(c.x + s * 0.64, c.y - s * 0.16),
+                    Pos2::new(c.x + s * 0.16, c.y - s * 0.16),
+                    Pos2::new(c.x + s * 0.16, c.y - s * 0.64),
+                ],
+                stroke,
+            ));
+            painter.add(Shape::line(
+                vec![
+                    Pos2::new(c.x - s * 0.16, c.y + s * 0.64),
+                    Pos2::new(c.x - s * 0.16, c.y + s * 0.16),
+                    Pos2::new(c.x - s * 0.64, c.y + s * 0.16),
+                ],
+                stroke,
+            ));
+        }
+        Icon::ClearList => {
+            for (dy, right) in [(-0.46, 0.72), (0.0, 0.50), (0.46, 0.28)] {
+                painter.line_segment(
+                    [
+                        Pos2::new(c.x - s * 0.72, c.y + s * dy),
+                        Pos2::new(c.x + s * right, c.y + s * dy),
+                    ],
+                    stroke,
+                );
+            }
         }
     }
 }
@@ -1294,10 +1371,12 @@ pub fn show_animated_modal(
             }
         });
 
-    // Slide-up offset (14px -> 0px)
+    // Smoothly interpolate modal width & height (e.g. toggling Expanded Cinema Mode)
     let y_offset = (1.0 - eased) * 14.0;
-    let clamped_w = size.x.min(screen.width() - 48.0);
-    let clamped_h = size.y.min(screen.height() - 48.0);
+    let target_w = size.x.min(screen.width() - 32.0);
+    let target_h = size.y.min(screen.height() - 32.0);
+    let clamped_w = ctx.animate_value_with_time(modal_id.with("w"), target_w, 0.20);
+    let clamped_h = ctx.animate_value_with_time(modal_id.with("h"), target_h, 0.20);
     let top_left = Pos2::new(
         screen.center().x - clamped_w * 0.5,
         screen.center().y - clamped_h * 0.5 + y_offset,

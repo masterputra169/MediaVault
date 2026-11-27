@@ -6,17 +6,17 @@
 [![Release](https://img.shields.io/github/v/release/masterputra169/MediaVault?label=Download&color=6366f1)](https://github.com/masterputra169/MediaVault/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
 
-MediaVault Desktop (`v0.4.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, in-app hardware-accelerated video player, audio decoder/player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
+MediaVault Desktop (`v0.5.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, in-app hardware-accelerated video player, seekable audio player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
 
 ---
 
 ## Download (Windows x64)
 
-| Package | Direct Download (`v0.4.0`) | Description |
+| Package | Direct Download (`v0.5.0`) | Description |
 |---|---|---|
-| **Windows Installer (Recommended)** | [MediaVault_0.4.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/MediaVault_0.4.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
-| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
-| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.4.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
+| **Windows Installer (Recommended)** | [MediaVault_0.5.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/MediaVault_0.5.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
+| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
+| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.5.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
 
 Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 
@@ -28,10 +28,10 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
   - No `yt-dlp`, no `FFmpeg`/`ffprobe`, no `gallery-dl`, no `Node.js`, and no browser WebView runtime.
   - Sub-second URL analysis, low RAM footprint, and instant native GPU startup.
 - **Modern Animated Native UI (Full English)**
-  - Hardware-accelerated native UI (`eframe`/`egui`) with crisp Windows system typography (`Segoe UI`), custom anti-aliased vector icons (zero missing-glyph boxes), seamless Windows 11 dark/light DWM titlebar integration, animated sliding tab indicator, glowing shimmer progress bars, smooth hover/modal transitions, and one-click Dark/Light theme switching.
+  - Hardware-accelerated native UI (`eframe`/`egui`) with crisp Windows system typography (`Segoe UI`), custom anti-aliased vector icons (zero missing-glyph boxes), seamless Windows 11 dark/light DWM titlebar + rounded corners + smooth GPU open/minimize/maximize/restore transitions (zero white flash), animated sliding tab indicator, glowing shimmer progress bars, smooth modal transitions, and one-click Dark/Light theme switching.
 - **7 Supported Public Platforms**
   - **YouTube** — Native InnerTube client extraction (`avc1` H.264 up to 1080p + `mp4a` AAC) with 4 MiB HTTP `Range` chunked streaming to avoid 1× playback throttling, losslessly muxed in pure Rust.
-  - **Facebook** — Public Reels, Watch videos, single photos, and multi-photo albums with validated CDN redirect handling (`fbcdn.net`).
+  - **Facebook** — Public Reels, Watch videos (progressive HD + adaptive **1080p DASH** pure-Rust muxing), single photos, and multi-photo albums with validated CDN redirect handling (`fbcdn.net`).
   - **X (Twitter)** — Public video posts, multi-photo posts, and quoted media via syndication extraction.
   - **Instagram** — Public Reels, video posts, and multi-slide photo carousels.
   - **Threads** — Public video, photo, and quoted/reposted thread media.
@@ -39,10 +39,11 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
   - **TikTok** — Public video/photo posts (strictly respects anti-bot/WAF boundaries without bypass).
 - **Built-in Pure-Rust Media Engine**
   - **ISO-BMFF MP4 / fMP4 Muxer & Probe (`mp4_engine.rs`)**: Parses standard `stbl` and fragmented DASH (`moof`/`trun`) streams, losslessly muxes adaptive H.264 video + AAC audio into interleaved `co64` fast-start `.mp4`, extracts lossless `.m4a`, transcodes 16-bit PCM `.wav`, and probes resolution/duration/codecs in `<1 ms`.
-  - **In-App Video, Audio & Photo Preview**: Play downloaded `.mp4` videos **directly inside the app** with synchronized audio, interactive timeline seeking, volume/mute controls, keyboard shortcuts (`Space`, `←`/`→`, `M`), and a responsive cinema stage built for both **widescreen 16:9 landscape** and **9:16 portrait** videos (powered by built-in Windows Media Foundation + `Rodio` — zero FFmpeg/VLC). View photos & multi-slide ZIP albums with `←`/`→` navigation and play `.m4a`/`.wav` audio natively via `Symphonia` + `Rodio`.
-- **Complete Download Manager**
+  - **In-App Video, Audio & Photo Preview**: Play downloaded `.mp4` videos **directly inside the app** with synchronized audio, interactive timeline seeking + hover timestamp tooltip, volume/mute controls, expandable cinema stage (`F` / double-click) built for both **widescreen 16:9 landscape** and **9:16 portrait** videos (Windows Media Foundation + `Rodio`). Play `.m4a`/`.wav` audio natively with live seek scrubber, timecode, volume/mute, and animated equalizer (`Symphonia` + `Rodio`), and browse photos & ZIP albums with `←`/`→` navigation.
+- **Complete Download Manager & Productivity**
+  - Global **`Ctrl+V`** instant paste-and-analyze and drag-and-drop `.url` support.
   - Live progress bar with transfer speed (`MB/s`), byte count, and ETA.
-  - Cancel active downloads cleanly, retry failed items, move completed files to another folder, filter by media type/platform/search query, and paginate download history persisted in local SQLite.
+  - Cancel active downloads cleanly, retry failed items, move completed files to another folder, **Clear Completed / Clear Failed** history in one click (files stay safe on disk), manual **Check for Updates** against GitHub Releases, and SQLite persistence.
 
 ---
 
@@ -97,7 +98,7 @@ cargo build --release --locked
 
 # Build Windows NSIS installer (optional)
 makensis installer.nsi
-# Output: rust-desktop\target\release\MediaVault_0.4.0_x64-setup.exe
+# Output: rust-desktop\target\release\MediaVault_0.5.0_x64-setup.exe
 ```
 
 ---
