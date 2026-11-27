@@ -5,7 +5,6 @@ Thank you for your interest in contributing to **MediaVault**!
 ## Development Guidelines
 
 - Keep MediaVault **100% Pure Rust**, local-first, single-user, and zero-external-dependency (no `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, or WebView/JS runtime).
-- Do not add DRM/paywall bypasses, login/cookie importers, or WAF/anti-bot bypasses.
 - Keep URL/SSRF policy (`url_policy.rs`), pure-Rust MP4/M4A engine (`mp4_engine.rs`), extractors (`extractors.rs`), download engine (`engine.rs`), storage (`db.rs`), audio player (`audio_player.rs`), and native GUI (`ui.rs`) cleanly separated and covered by offline unit tests.
 - Never commit `.env`, SQLite `.db` files, `target/`, or compiled `.exe`/`.msi` binaries.
 

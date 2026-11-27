@@ -25,7 +25,7 @@ impl AppError {
                 false,
             ),
             "WAF_BLOCKED" => (
-                "This site is showing an anti-bot verification challenge (WAF) on this network. MediaVault does not bypass anti-bot gates.",
+                "The source blocked this request with a verification challenge on this network.",
                 false,
             ),
             "GEO_RESTRICTED" => ("This media is restricted in your region.", false),

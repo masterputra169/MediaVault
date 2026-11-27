@@ -36,7 +36,7 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
   - **Instagram** — Public Reels, video posts, and multi-slide photo carousels.
   - **Threads** — Public video, photo, and quoted/reposted thread media.
   - **Pinterest** — Public video pins and high-resolution original image pins.
-  - **TikTok** — Public video/photo posts (strictly respects anti-bot/WAF boundaries without bypass).
+  - **TikTok** — Public video and photo posts.
 - **Built-in Pure-Rust Media Engine**
   - **ISO-BMFF MP4 / fMP4 Muxer & Probe (`mp4_engine.rs`)**: Parses standard `stbl` and fragmented DASH (`moof`/`trun`) streams, losslessly muxes adaptive H.264 video + AAC audio into interleaved `co64` fast-start `.mp4`, extracts lossless `.m4a`, transcodes 16-bit PCM `.wav`, and probes resolution/duration/codecs in `<1 ms`.
   - **In-App Video, Audio & Photo Preview**: Play downloaded `.mp4` videos **directly inside the app** with synchronized audio, interactive timeline seeking + hover timestamp tooltip, volume/mute controls, expandable cinema stage (`F` / double-click) built for both **widescreen 16:9 landscape** and **9:16 portrait** videos (Windows Media Foundation + `Rodio`). Play `.m4a`/`.wav` audio natively with live seek scrubber, timecode, volume/mute, and animated equalizer (`Symphonia` + `Rodio`), and browse photos & ZIP albums with `←`/`→` navigation.
@@ -68,7 +68,6 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 - **100% Local & Private**: No telemetry, no analytics, no accounts, and no cloud relay servers.
 - **Anti-SSRF & DNS Rebinding Protection**: Every outbound HTTP request uses a custom `PublicOnlyResolver` that blocks loopback, RFC1918 private, CGNAT, link-local, documentation, and non-global IPv6 addresses at connect time, plus strict per-platform domain and CDN allowlists on every redirect hop.
 - **Strict Filesystem Safety**: Rejects UNC network paths, symlink escapes, Alternate Data Streams, reserved DOS device names (`CON`, `NUL`, etc.), and protected Windows system directories.
-- **Public Media Only**: Never bypasses DRM, paywalls, logins, cookies, or anti-bot/WAF protections.
 
 ---
 
@@ -105,7 +104,7 @@ makensis installer.nsi
 
 ## Known Limitations
 
-- Platform extraction targets public, unauthenticated posts only. Platforms may occasionally change page markup or enforce IP-level bot checks (for example, TikTok frequently presents a `SlardarWAF` anti-bot verification challenge on certain networks, which MediaVault reports clearly as `WAF_BLOCKED` without attempting to bypass anti-bot gates).
+- Platform extraction targets public posts and may be affected if a platform changes its page markup or applies network-level restrictions.
 - In-app hardware-accelerated `.mp4` video playback uses Windows Media Foundation on Windows 10/11 (with an **External** button always available to open files in your system media player).
 
 ---

@@ -9,7 +9,6 @@ MediaVault Desktop is a **100% Pure-Rust, local-only, single-user** Windows desk
 - **SSRF & DNS Rebinding Protection:** Target URLs are validated against an explicit 7-platform & CDN allowlist, all non-public IPv4/IPv6 ranges are blocked, and a custom `PublicOnlyResolver` pins validated public IPs directly inside `reqwest`.
 - **Memory & Archive Safety:** Strict `image::Limits` (`16384×16384`, `128 MiB` decode cap), 2 GiB download size cap, disk-streamed ZIP creation, and symlink/size-bounded ZIP album reading.
 - **Path & NTLM Protection:** Download folder settings reject UNC shares (`\\server\share`), traversal (`..`), symlinks, NTFS ADS (`:`), Windows reserved DOS device names, and sensitive system directories.
-- **No Bypass Features:** Does **not** bypass DRM, paywalls, anti-bot/WAF gates, or private/login-required content, and does **not** import browser cookies.
 
 ## Reporting a Vulnerability
 
