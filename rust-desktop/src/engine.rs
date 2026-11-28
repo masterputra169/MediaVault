@@ -1709,4 +1709,71 @@ mod tests {
         }
         panic!("Live Facebook job timed out");
     }
+
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_pure_rust_tiktok_video_download() {
+        let dir = std::env::temp_dir().join(format!("mv_tt_live_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = Arc::new(Database::open(&dir.join("app.db"), dir.join("dl")).unwrap());
+        let previews = Arc::new(PreviewCache::new());
+        let engine = Arc::new(AppEngine::new(
+            Arc::clone(&db),
+            previews,
+            tokio::runtime::Handle::current(),
+        ));
+
+        let url = std::env::var("TT_LIVE_URL")
+            .unwrap_or_else(|_| "https://www.tiktok.com/@hankgreen1/video/7047596209028074758".into());
+        let meta = engine.analyze(&url).await.expect("live TikTok analyze failed");
+        println!(
+            "PURE_RUST_TT_ANALYZE: title={:?} qualities={:?} images={}",
+            meta.title,
+            meta.available_qualities,
+            meta.images.len()
+        );
+        assert!(!meta.available_qualities.is_empty());
+
+        let t0 = Instant::now();
+        let job = engine
+            .enqueue(
+                CreateDownloadRequest {
+                    url: url.clone(),
+                    kind: "video".into(),
+                    quality: "best".into(),
+                    container: "mp4".into(),
+                    allow_quality_fallback: true,
+                    image_index: None,
+                    output_dir: Some(dir.join("dl").display().to_string()),
+                },
+                None,
+            )
+            .unwrap();
+
+        for _ in 0..160 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let cur = db.get_job(&job.id).unwrap();
+            if cur.status == "completed" {
+                let out_path = PathBuf::from(cur.output_path.as_deref().unwrap());
+                let probe = mp4_engine::probe_mp4(&out_path).expect("probe_mp4 failed on TikTok video");
+                println!(
+                    "PURE_RUST_TT_DOWNLOAD OK ({:.2}s): {} bytes | {}x{} | v={:?} a={:?}",
+                    t0.elapsed().as_secs_f64(),
+                    probe.file_size_bytes,
+                    probe.width.unwrap_or(0),
+                    probe.height.unwrap_or(0),
+                    probe.video_codec,
+                    probe.audio_codec,
+                );
+                assert!(probe.video_codec.is_some());
+                assert!(probe.file_size_bytes > 50_000);
+                let _ = std::fs::remove_dir_all(&dir);
+                return;
+            }
+            if cur.status == "failed" {
+                panic!("Live TikTok job failed: {:?} {:?}", cur.error_code, cur.error_message);
+            }
+        }
+        panic!("Live TikTok job timed out");
+    }
 }

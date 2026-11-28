@@ -6,6 +6,7 @@ mod engine;
 mod errors;
 mod extractors;
 mod mp4_engine;
+mod tiktok;
 mod ui;
 mod ui_kit;
 mod url_policy;

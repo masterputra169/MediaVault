@@ -251,10 +251,15 @@ pub async fn fetch_bytes(
 
     for _hop in 0..=5 {
         ensure_public_host(&current).await?;
+        let has_ua = headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("user-agent"));
         let mut req = SHARED_HTTP
             .get(&current)
             .timeout(Duration::from_secs(timeout_secs))
             .header("Accept-Language", "en-US,en;q=0.9");
+        // CDNs reject bare clients; a browser UA is required for hotlink checks.
+        if !has_ua {
+            req = req.header("User-Agent", GENERIC_UA);
+        }
         for (k, v) in headers {
             req = req.header(*k, *v);
         }
@@ -303,7 +308,7 @@ pub async fn fetch_bytes(
     Err(AppError::new("NETWORK_ERROR"))
 }
 
-fn normalize_items(raw: Vec<(String, Option<u32>, Option<u32>)>) -> Vec<ImageItem> {
+pub(crate) fn normalize_items(raw: Vec<(String, Option<u32>, Option<u32>)>) -> Vec<ImageItem> {
     let mut seen = HashSet::new();
     let mut items = Vec::new();
     for (u, w, h) in raw {
@@ -2371,6 +2376,21 @@ pub fn parse_tiktok_rehydration(html: &str, url_str: &str) -> Option<TikTokMedia
 
 pub async fn fetch_tiktok_media(url_str: &str) -> Result<TikTokMediaResult, AppError> {
     ensure_public_host(url_str).await?;
+    match crate::tiktok::fetch(url_str).await {
+        Ok(media) => Ok(media),
+        Err(err) => {
+            // Last-resort rehydration pass with the generic client: it still
+            // works when only the app API hiccups but the page is served.
+            if let Ok(res) = rehydration_fallback(url_str).await {
+                return Ok(res);
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Plain-client rehydration pass, kept as an offline-friendly last resort.
+async fn rehydration_fallback(url_str: &str) -> Result<TikTokMediaResult, AppError> {
     let resp = SHARED_HTTP
         .get(url_str)
         .header("User-Agent", GENERIC_UA)
@@ -2380,7 +2400,9 @@ pub async fn fetch_tiktok_media(url_str: &str) -> Result<TikTokMediaResult, AppE
         .send()
         .await
         .map_err(|_| AppError::new("NETWORK_ERROR"))?;
-
+    if !resp.status().is_success() {
+        return Err(AppError::new("EXTRACTOR_FAILED"));
+    }
     let cookies: String = resp
         .headers()
         .get_all("set-cookie")
@@ -2389,22 +2411,13 @@ pub async fn fetch_tiktok_media(url_str: &str) -> Result<TikTokMediaResult, AppE
         .filter_map(|s| s.split(';').next())
         .collect::<Vec<_>>()
         .join("; ");
-
-    if !resp.status().is_success() {
-        return Err(classify_extractor_error(&format!("HTTP error {}", resp.status().as_u16())));
-    }
     let bytes = resp.bytes().await.map_err(|_| AppError::new("NETWORK_ERROR"))?;
     let html = String::from_utf8_lossy(&bytes);
-    if let Some(mut res) = parse_tiktok_rehydration(&html, url_str) {
-        if !cookies.is_empty() {
-            res.cookies = Some(cookies);
-        }
-        return Ok(res);
+    let mut res = parse_tiktok_rehydration(&html, url_str).ok_or_else(|| AppError::new("UNAVAILABLE_MEDIA"))?;
+    if !cookies.is_empty() {
+        res.cookies = Some(cookies);
     }
-    if html.contains("SlardarWAF") || html.contains("verify") || html.contains("captcha") {
-        return Err(AppError::new("WAF_BLOCKED"));
-    }
-    Err(AppError::new("UNAVAILABLE_MEDIA"))
+    Ok(res)
 }
 
 // ============================================================================

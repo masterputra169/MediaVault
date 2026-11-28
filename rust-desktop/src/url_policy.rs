@@ -43,6 +43,9 @@ const THUMBNAIL_HOSTS: &[&str] = &[
     "tiktokcdn-us.com",
     "tiktokcdn-eu.com",
     "tiktokcdn-in.com",
+    "tiktokcdn.net",
+    "muscdn.com",
+    "tiktok.com",
     "ibyteimg.com",
 ];
 
@@ -59,8 +62,12 @@ const VIDEO_CDN_HOSTS: &[(&str, &[&str])] = &[
             "tiktokcdn-us.com",
             "tiktokcdn-eu.com",
             "tiktokcdn-in.com",
+            "tiktokcdn.net",
             "tiktokv.com",
+            "tiktok.com",
             "byteoversea.com",
+            "byteicdn.com",
+            "muscdn.com",
             "ibytedtos.com",
         ],
     ),

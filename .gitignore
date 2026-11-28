@@ -27,6 +27,7 @@
 # Rust Desktop build artifacts & caches
 /.pnpm-store/
 /rust-desktop/target/
+/rust-desktop/.tools/
 /rust-desktop/*.exe
 /rust-desktop/*.msi
 

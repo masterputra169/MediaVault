@@ -28,7 +28,10 @@ impl AppError {
                 "The source blocked this request with a verification challenge on this network.",
                 false,
             ),
-            "GEO_RESTRICTED" => ("This media is restricted in your region.", false),
+            "GEO_RESTRICTED" => (
+                "This media is region-restricted, or this IP address is blocked by the source.",
+                false,
+            ),
             "FORMAT_UNAVAILABLE" => ("The selected format or quality is unavailable from the source.", true),
             "EXTRACTOR_FAILED" => ("Failed to extract media from the public source.", true),
             "MUX_FAILED" => ("Failed to mux MP4 video and audio streams.", true),

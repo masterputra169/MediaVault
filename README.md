@@ -36,7 +36,7 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
   - **Instagram** — Public Reels, video posts, and multi-slide photo carousels.
   - **Threads** — Public video, photo, and quoted/reposted thread media.
   - **Pinterest** — Public video pins and high-resolution original image pins.
-  - **TikTok** — Public video and photo posts.
+  - **TikTok** — Public video and photo posts through a dedicated anti-WAF engine: BoringSSL TLS/HTTP-2 impersonation of a real browser (JA3/JA4 + Akamai fingerprint), randomized header fingerprinting, a native SHA-256 proof-of-work solver for the SlardarWAF challenge, and a signed Android app-API fallback with a generated device identity.
 - **Built-in Pure-Rust Media Engine**
   - **ISO-BMFF MP4 / fMP4 Muxer & Probe (`mp4_engine.rs`)**: Parses standard `stbl` and fragmented DASH (`moof`/`trun`) streams, losslessly muxes adaptive H.264 video + AAC audio into interleaved `co64` fast-start `.mp4`, extracts lossless `.m4a`, transcodes 16-bit PCM `.wav`, and probes resolution/duration/codecs in `<1 ms`.
   - **In-App Video, Audio & Photo Preview**: Play downloaded `.mp4` videos **directly inside the app** with synchronized audio, interactive timeline seeking + hover timestamp tooltip, volume/mute controls, expandable cinema stage (`F` / double-click) built for both **widescreen 16:9 landscape** and **9:16 portrait** videos (Windows Media Foundation + `Rodio`). Play `.m4a`/`.wav` audio natively with live seek scrubber, timecode, volume/mute, and animated equalizer (`Symphonia` + `Rodio`), and browse photos & ZIP albums with `←`/`→` navigation.
@@ -55,6 +55,7 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 | Modern UI & Design System | [`rust-desktop/src/ui.rs`](rust-desktop/src/ui.rs), [`rust-desktop/src/ui_kit.rs`](rust-desktop/src/ui_kit.rs) | Animated native UI, custom vector icons, Windows 11 DWM titlebar sync, GPU thumbnail/album viewer |
 | Pure-Rust MP4 & Media Players | [`rust-desktop/src/mp4_engine.rs`](rust-desktop/src/mp4_engine.rs), [`rust-desktop/src/video_player.rs`](rust-desktop/src/video_player.rs), [`rust-desktop/src/audio_player.rs`](rust-desktop/src/audio_player.rs) | ISO-BMFF muxer/demuxer/probe, lossless M4A extraction, WAV transcoding, real-time in-app MP4 video player (Windows Media Foundation + Rodio), and native audio player |
 | 7-Platform Extractors | [`rust-desktop/src/extractors.rs`](rust-desktop/src/extractors.rs) | Native HTTP/JSON/HTML extractors, bounded GPU thumbnail `PreviewCache`, streaming ZIP album bundler |
+| TikTok Anti-WAF Engine | [`rust-desktop/src/tiktok/`](rust-desktop/src/tiktok) | Browser TLS impersonation (BoringSSL), blockbuster headers, SlardarWAF proof-of-work solver, app-API device signing, aweme normalisation |
 | Download Queue & FS Ops | [`rust-desktop/src/engine.rs`](rust-desktop/src/engine.rs) | Concurrent job runner, cancelable streaming, validated CDN redirects, ranged YouTube streaming, safe Explorer integration |
 | URL & SSRF Security Policy | [`rust-desktop/src/url_policy.rs`](rust-desktop/src/url_policy.rs) | Strict platform & CDN allowlists, `PublicOnlyResolver` (anti-SSRF & DNS rebinding), IPv4/IPv6 global unicast enforcement |
 | Storage & Path Guard | [`rust-desktop/src/db.rs`](rust-desktop/src/db.rs) | Embedded SQLite (`rusqlite`), destination folder validation (anti-UNC, traversal, symlink, ADS, system directory blocks) |
@@ -81,18 +82,25 @@ Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 ## Build from Source
 
 ### Prerequisites
-- **Rust** (`rustup`, stable 1.80+ with MSVC toolchain on Windows)
+- **Rust** (`rustup`, stable 1.85+ with the MSVC toolchain on Windows)
+- **Visual Studio Build Tools** with the *Desktop development with C++* workload, plus **CMake**, **Ninja**, **NASM** and **LLVM (libclang)**
+  - CMake and Ninja already ship inside Visual Studio; NASM and LLVM must be installed separately.
+  - They are required because the TikTok engine links BoringSSL (through `wreq` and `btls`) for genuine browser TLS impersonation. The first build compiles BoringSSL once and takes several minutes; later builds are incremental.
 - *(Optional, for installer)* **NSIS** (`makensis`)
 
 ### Run & Test
 ```powershell
 cd rust-desktop
 
-# Run all offline unit tests (no internet required)
-cargo test --locked
+# One-time: point the build at NASM and LLVM
+$env:NASM_DIR      = "C:\Program Files\NASM"
+$env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 
-# Build optimized standalone executable
-cargo build --release --locked
+# All builds and tests go through the helper: it loads the MSVC environment,
+# unshadows the POSIX link.exe shipped by Git-for-Windows, and finds CMake/Ninja.
+.\build-env.bat test --locked          # offline unit tests, no internet needed
+
+.\build-env.bat build --release --locked
 # Output: rust-desktop\target\release\mediavault.exe
 
 # Build Windows NSIS installer (optional)
@@ -100,11 +108,22 @@ makensis installer.nsi
 # Output: rust-desktop\target\release\MediaVault_0.6.0_x64-setup.exe
 ```
 
+> Plain `cargo test` and `cargo build` also work when the MSVC environment is already loaded and `PATH` exposes `cmake`, `nasm` and `LIBCLANG_PATH`.
+
+### TikTok engine layout
+- `src/tiktok/http.rs` — impersonating clients (Safari profile for the web, OkHttp profile for the app API), scoped cookie jars, random header fingerprinting.
+- `src/tiktok/challenge.rs` — SlardarWAF SHA-256 proof-of-work solver for the `_wafchallengeid` cookie.
+- `src/tiktok/device.rs` — Android device identity and app-API query builder.
+- `src/tiktok/parse.rs` — aweme normalisation for app and web payloads.
+- `src/tiktok/mod.rs` — tiered orchestration: page fetch, challenge retry, app-API fallback.
+
 ---
 
 ## Known Limitations
 
 - Platform extraction targets public posts and may be affected if a platform changes its page markup or applies network-level restrictions.
+- TikTok rotates its WAF rules and format keys constantly; the engine has three tiers (page fetch, challenge solve, app API) so one tier failing is not fatal, but a hard IP-level block (status 10204) cannot be bypassed without a proxy.
+- TikTok media sits behind signed CDN links that expire: analyze and start the download in the same session.
 - In-app hardware-accelerated `.mp4` video playback uses Windows Media Foundation on Windows 10/11 (with an **External** button always available to open files in your system media player).
 
 ---
