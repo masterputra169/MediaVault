@@ -607,6 +607,26 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "hits the live TikTok site; set TT_LIVE_PHOTO to a slideshow URL"]
+    async fn live_extracts_public_photo_post() {
+        let Ok(url) = std::env::var("TT_LIVE_PHOTO") else {
+            println!("TT_LIVE_PHOTO not set, skipping");
+            return;
+        };
+        let media = fetch(&url).await.expect("live photo extraction succeeds");
+        assert_eq!(extract_ids(&url).unwrap().0, media.media_id);
+        assert!(!media.images.is_empty(), "no slideshow images returned");
+        assert!(media.images.iter().all(|i| i.url.starts_with("https://")));
+        assert!(media.images.iter().all(|i| i.width.is_some() || i.height.is_some()));
+        println!(
+            "images={} first={} title={:?}",
+            media.images.len(),
+            media.images[0].url,
+            media.title
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "hits the live TikTok site"]
     async fn live_waf_challenge_is_solved_by_impersonation() {
         // The plain generic client is challenged; the impersonating one is not.

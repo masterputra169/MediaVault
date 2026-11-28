@@ -6,17 +6,17 @@
 [![Release](https://img.shields.io/github/v/release/masterputra169/MediaVault?label=Download&color=6366f1)](https://github.com/masterputra169/MediaVault/releases/latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-10b981.svg)](LICENSE)
 
-MediaVault Desktop (`v0.6.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, lightweight in-app video player, seekable audio player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
+MediaVault Desktop (`v0.7.0`) is written **100% in Rust** — GUI, media extractors, ISO-BMFF MP4/fMP4 muxer & probe, lightweight in-app video player, seekable audio player, image decoder, ZIP archiver, and embedded SQLite database. It does **not** require `yt-dlp`, `FFmpeg`, `ffprobe`, `gallery-dl`, `Node.js`, `Python`, or `WebView2`.
 
 ---
 
 ## Download (Windows x64)
 
-| Package | Direct Download (`v0.6.0`) | Description |
+| Package | Direct Download (`v0.7.0`) | Description |
 |---|---|---|
-| **Windows Installer (Recommended)** | [MediaVault_0.6.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/MediaVault_0.6.0_x64-setup.exe) | Per-user NSIS installer (~4.7 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
-| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/MediaVault.exe) | Single standalone `.exe` (~14 MiB) — run directly from any folder with zero installation. |
-| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.6.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
+| **Windows Installer (Recommended)** | [MediaVault_0.7.0_x64-setup.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.7.0/MediaVault_0.7.0_x64-setup.exe) | Per-user NSIS installer (~6.3 MiB) with selectable install directory, Start Menu & Desktop shortcuts, and clean uninstaller. |
+| **Portable Executable** | [MediaVault.exe](https://github.com/masterputra169/MediaVault/releases/download/v0.7.0/MediaVault.exe) | Single standalone `.exe` (~21 MiB, BoringSSL linked in) — run directly from any folder with zero installation. |
+| **SHA-256 Checksums** | [SHA256SUMS.txt](https://github.com/masterputra169/MediaVault/releases/download/v0.7.0/SHA256SUMS.txt) | Verify integrity of every official release artifact. |
 
 Browse all releases: **https://github.com/masterputra169/MediaVault/releases**
 
@@ -105,7 +105,7 @@ $env:LIBCLANG_PATH = "C:\Program Files\LLVM\bin"
 
 # Build Windows NSIS installer (optional)
 makensis installer.nsi
-# Output: rust-desktop\target\release\MediaVault_0.6.0_x64-setup.exe
+# Output: rust-desktop\target\release\MediaVault_0.7.0_x64-setup.exe
 ```
 
 > Plain `cargo test` and `cargo build` also work when the MSVC environment is already loaded and `PATH` exposes `cmake`, `nasm` and `LIBCLANG_PATH`.
@@ -123,6 +123,8 @@ makensis installer.nsi
 
 - Platform extraction targets public posts and may be affected if a platform changes its page markup or applies network-level restrictions.
 - TikTok rotates its WAF rules and format keys constantly; the engine has three tiers (page fetch, challenge solve, app API) so one tier failing is not fatal, but a hard IP-level block (status 10204) cannot be bypassed without a proxy.
+- TikTok's Android endpoints now also expect a signed request (`X-Gorgon`/`X-Argus`), which this build does not generate yet: from many networks they answer `200` with an empty body, so the app tier is a bonus rather than the primary path. The web tier is what carries extraction.
+- Slideshow/photo posts are parsed, but reachable slideshow URLs vary by account; `cargo test live_extracts_public_photo_post -- --ignored` takes one via `TT_LIVE_PHOTO=<url>`.
 - TikTok media sits behind signed CDN links that expire: analyze and start the download in the same session.
 - In-app hardware-accelerated `.mp4` video playback uses Windows Media Foundation on Windows 10/11 (with an **External** button always available to open files in your system media player).
 

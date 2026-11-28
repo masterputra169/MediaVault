@@ -863,7 +863,7 @@ impl eframe::App for MediaVaultApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new("MediaVault v0.6.0 · 100% Native Rust + SQLite · Local & Private")
+                        RichText::new("MediaVault v0.7.0 · 100% Native Rust + SQLite · Local & Private")
                             .font(font_regular(11.5))
                             .color(palette.muted),
                     );

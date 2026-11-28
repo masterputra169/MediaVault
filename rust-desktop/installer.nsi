@@ -1,13 +1,13 @@
-; MediaVault 0.6.0 — 100% Pure-Rust Native Windows NSIS Installer (Per-User, Selectable Folder)
+; MediaVault 0.7.0 — 100% Pure-Rust Native Windows NSIS Installer (Per-User, Selectable Folder)
+Unicode true
 !include "MUI2.nsh"
 
 Name "MediaVault"
-OutFile "target\release\MediaVault_0.6.0_x64-setup.exe"
+OutFile "target\release\MediaVault_0.7.0_x64-setup.exe"
 InstallDir "$LOCALAPPDATA\Programs\MediaVault"
 InstallDirRegKey HKCU "Software\MediaVault" "InstallDir"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma
-Unicode true
 
 !define MUI_ABORTWARNING
 !define MUI_ICON "assets\icon.ico"
@@ -37,7 +37,7 @@ Section "MediaVault" SecMain
 
   WriteRegStr HKCU "Software\MediaVault" "InstallDir" "$INSTDIR"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "DisplayName" "MediaVault"
-  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "DisplayVersion" "0.6.0"
+  WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "DisplayVersion" "0.7.0"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "Publisher" "MediaVault"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "DisplayIcon" "$INSTDIR\MediaVault.exe"
   WriteRegStr HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\MediaVault" "UninstallString" '"$INSTDIR\Uninstall.exe"'
